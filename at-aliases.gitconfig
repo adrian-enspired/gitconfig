@@ -1,0 +1,74 @@
+# ~/.config/git/at-aliases.gitconfig
+#
+# Include from your main config with:
+#
+#   [include]
+#       path = ~/.config/git/aliases.gitconfig
+
+[alias]
+	# --- pure git, no shell needed ------------------------------------
+	o    = push origin
+	op   = push origin
+	oof  = push -f origin
+	up   = push upstream
+	uff  = push -f upstream
+	ceg  = config --edit --global
+	fc   = diff HEAD
+	fu   = diff
+	fs   = diff --staged
+	lg   = log --oneline --graph --all
+	ll   = log --name-status HEAD^..HEAD
+
+	# --- delegated to git-at -------------------------------------------
+	b    = "!~/.config/git/git-at b"
+	bi   = "!~/.config/git/git-at bi"
+	br   = "!~/.config/git/git-at br"
+	bri  = "!~/.config/git/git-at bri"
+	bd   = "!~/.config/git/git-at bd"
+	bdf  = "!~/.config/git/git-at bdf"
+	bg   = "!~/.config/git/git-at bg"
+	bgi  = "!~/.config/git/git-at bgi"
+	bgr  = "!~/.config/git/git-at bgr"
+	bgri = "!~/.config/git/git-at bgri"
+	bk   = "!~/.config/git/git-at bk"
+	bkr  = "!~/.config/git/git-at bkr"
+	bkd  = "!~/.config/git/git-at bkd"
+	c    = "!~/.config/git/git-at c"
+	d    = "!~/.config/git/git-at d"
+	dk   = "!~/.config/git/git-at dk"
+	dr   = "!~/.config/git/git-at dr"
+	ds   = "!~/.config/git/git-at ds"
+	duk  = "!~/.config/git/git-at duk"
+	f5   = "!~/.config/git/git-at f5"
+	fb   = "!~/.config/git/git-at fb"
+	fd   = "!~/.config/git/git-at fd"
+	fk   = "!~/.config/git/git-at fk"
+	h    = "!~/.config/git/git-at h"
+	j    = "!~/.config/git/git-at j"
+	jduk = "!~/.config/git/git-at jduk"
+	jk   = "!~/.config/git/git-at jk"
+	jr   = "!~/.config/git/git-at jr"
+	jrr  = "!~/.config/git/git-at jrr"
+	jt   = "!~/.config/git/git-at jt"
+	jurr = "!~/.config/git/git-at jurr"
+	oh   = "!~/.config/git/git-at oh"
+	oor  = "!~/.config/git/git-at oor"
+	or   = "!~/.config/git/git-at or"
+	p    = "!~/.config/git/git-at p"
+	pall = "!~/.config/git/git-at pall"
+	pb   = "!~/.config/git/git-at pb"
+	pd   = "!~/.config/git/git-at pd"
+	pf   = "!~/.config/git/git-at pf"
+	pl   = "!~/.config/git/git-at pl"
+	pw   = "!~/.config/git/git-at pw"
+	r    = "!~/.config/git/git-at r"
+	radd = "!~/.config/git/git-at radd"
+	rd   = "!~/.config/git/git-at rd"
+	rr   = "!~/.config/git/git-at rr"
+	s    = "!~/.config/git/git-at s"
+	t    = "!~/.config/git/git-at t"
+	u    = "!~/.config/git/git-at u"
+	all  = "!~/.config/git/git-at all"
+	um   = "!~/.config/git/git-at um"
+	uk   = "!~/.config/git/git-at uk"
+	urr  = "!~/.config/git/git-at urr"

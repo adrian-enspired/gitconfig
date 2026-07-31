@@ -1,0 +1,67 @@
+# This is Git's per-user configuration file.
+
+[include]
+	path = ~/.config/git/at-aliases.gitconfig
+
+[user]
+	name =
+	email =
+	signingkey =
+
+[push]
+	default = current
+	autoSetupRemote = true
+	followTags = true
+
+[pull]
+	rebase = true
+
+[rebase]
+	autoStash = true
+	autoSquash = true
+	#missingCommitsCheck = true
+	updateRefs = true
+
+[rerere]
+	enabled = true
+	autoupdate = true
+
+[branch]
+	sort = -authordate
+
+[tag]
+	sort = version:refname
+
+[init]
+	defaultBranch = master
+
+[diff]
+	algorithm = histogram
+	colorMoved = plain
+	mnemonicPrefix = true # i(ndex)..w(orking)  vs  a..b
+	renames = copies
+	context = 3
+	interHunkContext = 10
+
+[commit]
+	gpgSign = true
+
+[help]
+	autocorrect = prompt
+
+[jira]
+	# default jira project key to use when omitted from task IDs.
+	# can be overridden at call site with J_TASKPREFIX=
+	taskprefix = MAD
+	# transition name to use when starting work on a task.
+	# can be overridden at call site with JK_TRANSITION=
+	ktransition = "In Progress"
+	# transition name to use when work is dev complete (i.e., when opening a pull request).
+	# can be overridden at call site with JR_TRANSITION=
+	rtransition = "In Review"
+
+[patch]
+	# base directory for the patch commands (pf / pb / pall / pw).
+	# patches land in <[patch]dir>/<repo>/<branch>/<command name>
+	# can be overridden at call site with GIT_PATCH_DIR=
+	dir = ~/patches
