@@ -1,0 +1,119 @@
+#!/bin/sh
+#
+# Install git-at into ~/.config/git (or $1).
+#
+#   ./install            install, then say what is left to configure
+#   ./install <dir>      install somewhere else
+#   ./install -n         dry run: print what would be copied
+#
+# Copies the script, the model prompt files and the alias file. Your own
+# gitconfig is never written to: the last step prints the include line and the
+# settings to add, so nothing of yours is overwritten by an install.
+
+set -u
+
+dry=''
+dest=''
+for a in "$@"; do
+    case $a in
+        -n|--dry-run) dry=1 ;;
+        -h|--help)    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)           printf 'install: unknown option: %s\n' "$a" >&2; exit 2 ;;
+        *)            dest=$a ;;
+    esac
+done
+
+src=$(cd "$(dirname "$0")" && pwd)
+dest=${dest:-$HOME/.config/git}
+
+say() { printf '%s\n' "$*"; }
+run() { if [ -n "$dry" ]; then printf 'would: %s\n' "$*"; else "$@"; fi; }
+
+[ -f "$src/git-at" ] || { say "no git-at in $src"; exit 1; }
+
+# 1. the script itself, and the prompt files it reads at runtime
+run mkdir -p "$dest/rules" || exit 1
+run cp "$src/git-at" "$dest/git-at" || exit 1
+run chmod +x "$dest/git-at" || exit 1
+for f in "$src"/rules/*.md; do
+    [ -f "$f" ] || continue
+    run cp "$f" "$dest/rules/${f##*/}" || exit 1
+done
+
+# 2. the alias file, which is what makes `git dr` work rather than `git-at dr`
+run cp "$src/at-aliases.gitconfig" "$dest/at-aliases.gitconfig" || exit 1
+
+[ -n "$dry" ] && exit 0
+
+say "installed to $dest"
+say ''
+
+# 3. tell the user what to add themselves - never edit their config for them
+if git config --global --get-all include.path 2>/dev/null | grep -qx "$dest/at-aliases.gitconfig"; then
+    say 'aliases: already included in your global config'
+else
+    say 'add the aliases to your global git config:'
+    say ''
+    say "    git config --global --add include.path $dest/at-aliases.gitconfig"
+fi
+say ''
+
+# 4. suggest what is unset. printed, never written: these are personal, and an
+#    installer that edits a global config clobbers something sooner or later.
+unset_key() { ! git config --global --get "$1" >/dev/null 2>&1; }
+
+missing=''
+for pair in \
+    'at.ticket.prefix:COM:your linear team prefix, used when you pass a bare number' \
+    'at.linear.apikey:lin_api_xxx:a linear personal api key' \
+    'at.linear.workspace:nexcess:your linear workspace slug, for ticket links'
+do
+    key=${pair%%:*}
+    rest=${pair#*:}
+    unset_key "$key" || continue
+    missing="${missing}${missing:+
+}    # ${rest#*:}
+    git config --global $key '${rest%%:*}'"
+done
+
+# a model the machine actually has beats a model from an example
+# `claude -p` is an agent: left alone it loads MCP servers, settings and CLAUDE.md,
+# and will use tools instead of answering. Emptying both makes it a text transform
+# and takes about two seconds off every call.
+claude_flags='--allowed-tools "" --setting-sources ""'
+if command -v ollama >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
+    small='ollama run qwen3:4b'; large='ollama run qwen3:4b'
+else
+    small="claude -p --model haiku $claude_flags"; large="claude -p $claude_flags"
+fi
+
+llm=''
+if unset_key at.llm.command && unset_key at.llm.slugcommand &&
+   unset_key at.llm.commitcommand && unset_key at.llm.prcommand
+then
+    llm="Configure which LLM command to use per feature:
+
+    git config --global at.llm.slugcommand   '$small'
+    git config --global at.llm.commitcommand '$small'
+    git config --global at.llm.prcommand     '$large'
+
+or, use one model for all features:
+
+    git config --global at.llm.command '$small'"
+fi
+
+if [ -n "$missing" ]; then
+    say 'unset settings (everything still works without them, with less):'
+    say ''
+    say "$missing"
+    say ''
+fi
+if [ -n "$llm" ]; then
+    say "$llm"
+    say ''
+    say 'any command works: prompt on stdin, plain text on stdout, no interaction.'
+    say ''
+fi
+[ -z "$missing" ] && [ -z "$llm" ] && { say 'settings: all set'; say ''; }
+
+say "detail on any command: git h <command>"

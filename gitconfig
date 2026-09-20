@@ -49,19 +49,44 @@
 [help]
 	autocorrect = prompt
 
-[jira]
-	# default jira project key to use when omitted from task IDs.
-	# can be overridden at call site with J_TASKPREFIX=
-	taskprefix = MAD
-	# transition name to use when starting work on a task.
-	# can be overridden at call site with JK_TRANSITION=
-	ktransition = "In Progress"
-	# transition name to use when work is dev complete (i.e., when opening a pull request).
-	# can be overridden at call site with JR_TRANSITION=
-	rtransition = "In Review"
+[at "ticket"]
+	# default ticket prefix for a bare number: `git dk 12345` -> COM-12345
+	# override per call with AT_TPREFIX=
+	prefix =
 
-[patch]
+[at "linear"]
+	# a linear personal api key. keep this out of any repo: set it in your own
+	# global config, not here. override per call with AT_LINEAR_APIKEY=
+	apikey =
+	# workspace slug, used to build ticket links in PR bodies
+	workspace =
+
+[at "llm"]
+	# any command taking a prompt on stdin and writing text to stdout:
+	#   claude -p --model haiku --allowed-tools "" --setting-sources ""
+	#   ollama run qwen3:4b
+	# the two empty flags matter: `claude -p` is an agent, and left with its
+	# tools and settings it will go and look at the repo instead of answering.
+	# per feature: at.llm.commitcommand / prcommand / slugcommand
+	command =
+	# seconds before the model is given up on and the command carries on without it
+	timeout = 60
+
+[at "commit"]
+	# the trailer `c --cc` adds. attributes the code, not the message
+	coauthor =
+
+[at "status"]
+	# the ticket status each command moves to; empty means leave it alone
+	dk = In Progress
+	uk = In Progress
+	r = In Review
+	rd = In Progress
+	rr = In Review
+	urr = In Progress
+
+[at "patch"]
 	# base directory for the patch commands (pf / pb / pall / pw).
-	# patches land in <[patch]dir>/<repo>/<branch>/<command name>
-	# can be overridden at call site with GIT_PATCH_DIR=
+	# patches land in <at.patch.dir>/<repo>/<branch>/<command name>
+	# override per call with AT_PATCH_DIR=
 	dir = ~/patches

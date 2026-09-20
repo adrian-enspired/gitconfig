@@ -1,0 +1,71 @@
+#!/bin/sh
+#
+# Run the git-at test suite.
+#
+#   tests/run                 every tests/*.t, then shellcheck
+#   tests/run tests/foo.t     just those files
+#
+# Each .t file runs as its own process against throwaway repos under a temp
+# directory, with HOME and the git config environment pointed there so nothing
+# reads or writes the user's real configuration.
+
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+AT="$root/git-at"
+export AT
+
+[ -f "$AT" ] || { printf 'no git-at at %s\n' "$AT" >&2; exit 1; }
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/git-at-tests.XXXXXX") || exit 1
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+HOME="$tmp/home"; export HOME
+mkdir -p "$HOME"
+GIT_CONFIG_GLOBAL="$HOME/.gitconfig"; export GIT_CONFIG_GLOBAL
+GIT_CONFIG_SYSTEM=/dev/null;          export GIT_CONFIG_SYSTEM
+GIT_CONFIG_NOSYSTEM=1;                export GIT_CONFIG_NOSYSTEM
+GIT_TERMINAL_PROMPT=0;                export GIT_TERMINAL_PROMPT
+: >"$GIT_CONFIG_GLOBAL"
+
+if [ $# -gt 0 ]; then
+    files=$*
+else
+    files=$(ls "$root"/tests/*.t 2>/dev/null)
+fi
+[ -n "$files" ] || { printf 'no test files\n' >&2; exit 1; }
+
+rc=0
+for f in $files; do
+    name=${f##*/}
+    printf '# %s\n' "$name"
+    AT_TMP="$tmp/${name%.t}"; export AT_TMP
+    mkdir -p "$AT_TMP"
+    sh "$f" || rc=1
+done
+
+# `h` is generated from the comments in the script, so drift is a test failure.
+printf '# help\n'
+if out=$(sh "$AT" _sync-help 2>&1); then
+    printf 'ok - help matches the implemented commands\n'
+else
+    printf 'not ok - help matches the implemented commands\n'
+    printf '%s\n' "$out" | sed 's/^/    /'
+    rc=1
+fi
+
+printf '# shellcheck\n'
+if command -v shellcheck >/dev/null 2>&1; then
+    if out=$(shellcheck -s sh "$AT" "$root/install" "$root/tests/run" "$root/tests/lib.sh" 2>&1); then
+        printf 'ok - shellcheck is clean\n'
+    else
+        printf 'not ok - shellcheck is clean\n'
+        printf '%s\n' "$out" | sed 's/^/    /'
+        rc=1
+    fi
+else
+    printf '# skipped: shellcheck is not installed\n'
+fi
+
+[ "$rc" -eq 0 ] && printf '\nall tests passed\n' || printf '\nFAILURES\n'
+exit "$rc"
