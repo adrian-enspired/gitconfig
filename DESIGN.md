@@ -124,6 +124,14 @@ Status changes come from `at.status.<cmd>`; an empty value means leave the statu
 Defaults shipped in `gitconfig`: `dk`/`uk` → In Progress, `r`/`rr` → In Review, `rd`/`urr` →
 In Progress.
 
+## Tickets: pluggable trackers
+
+Ticketing is Linear-only and wired into the script. Making the tracker a plugin - one
+executable per provider under `<install dir>/plugin/`, a versioned verb contract, exit codes
+callers can degrade on, and prefix routing so Jira and Linear can be live at once - is designed
+in [docs/ticket-plugins.md](docs/ticket-plugins.md). Not built yet; the sections below describe
+what exists today.
+
 ## LLM assistance
 
 One contract: **prompt on stdin, text on stdout**. `at.llm.command` holds any command meeting

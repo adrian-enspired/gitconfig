@@ -41,6 +41,7 @@
 	fk   = "!~/.config/git/git-at fk"
 	h    = "!~/.config/git/git-at h"
 	i    = "!~/.config/git/git-at i"
+	it   = "!~/.config/git/git-at it"
 	oh   = "!~/.config/git/git-at oh"
 	oor  = "!~/.config/git/git-at oor"
 	or   = "!~/.config/git/git-at or"

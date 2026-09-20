@@ -267,6 +267,14 @@ _linear_title() {
 # move a ticket to a named workflow state. two calls: the state ids belong to the
 # issue's own team, so they have to be read before anything can be set.
 #   $1: ticket key   $2: state name
+# the statuses this ticket's team offers, one per line
+_linear_states() {
+    # shellcheck disable=SC2016  # graphql variables
+    body='{"query":"query($id:String!){issue(id:$id){id team{states{nodes{id name}}}}}","variables":{"id":"'"$1"'"}}'
+    r=$(_linear_post "$body") || return 1
+    printf '%s' "$r" | jq -r '.data.issue.team.states.nodes[]?.name' 2>/dev/null | grep . || return 1
+}
+
 _linear_move() {
     _is_ignored_key "$1" && return 1
     # shellcheck disable=SC2016  # graphql variables
@@ -294,6 +302,45 @@ _ticket_move() {
     _is_ignored_key "$key" && return 0
     _linear_move "$key" "$want" || _warn "could not move $key to '$want' - carrying on"
     return 0
+}
+
+# move a ticket to a status
+#
+# Unlike the transitions the other commands make on their way past, this one was
+# asked for: it says what went wrong rather than warning and carrying on.
+#   $1: ticket key, or just the number (at.ticket.prefix supplies the rest).
+#       with one argument, the branch's own ticket.
+#   $2: the status to move it to
+cmd_it() {
+    if [ -n "${2:-}" ]; then
+        want=$2
+        key=$(_ticket_key "$1") || _die "'$1' is not a ticket key or number"
+    else
+        want=${1:-}
+        [ -n "$want" ] || _die 'usage: git it [<ticket>] <status>'
+        # one argument is the status; a ticket key alone is a half-typed command
+        _ticket_key "$want" >/dev/null 2>&1 &&
+            _die "usage: git it [<ticket>] <status> - '$want' is a ticket, not a status"
+        key=$(cmd_i)
+        [ -n "$key" ] ||
+            _die "this branch is not linked to a ticket - name one: \`git it <ticket> '$want'\`"
+    fi
+    _is_ignored_key "$key" &&
+        _die "$key belongs to another tracker (at.ticket.ignored-prefixes) - move it there"
+    [ -n "$(_cfg at.linear.apikey AT_LINEAR_APIKEY)" ] ||
+        _die 'no linear api key - set at.linear.apikey'
+
+    if _linear_move "$key" "$want"; then
+        printf '%s -> %s\n' "$key" "$want"
+        return 0
+    fi
+    # the usual cause is a status this team does not have, so say which it does
+    states=$(_linear_states "$key") || _die "could not reach linear, or $key does not exist"
+    printf '%s\n' "$states" | grep -qix "$want" &&
+        _die "linear refused to move $key to '$want'"
+    _warn "$key has no status '$want'. it has:"
+    printf '%s\n' "$states" | sed 's/^/  /' >&2
+    return 1
 }
 
 # a slug for a ticket: from its title, shortened by the model when it runs long
@@ -774,12 +821,40 @@ cmd_f5() {
     fi
 }
 
-# create a tag
-#   $1: tag name
-#   $2: message (defaults to $1)
+# create an annotated tag, refusing a name already in use
+#
+# Tags are one shared namespace with no fast-forward rule to fall back on, so a
+# name taken on a remote is a problem to find now rather than at push time.
+# Checked with `ls-remote`, which reads every remote without touching local refs -
+# fetching tags instead would prune from one remote what only exists on another.
+#   -f | --force: skip the checks and replace what is there
+#   $1: tag name   $2: message (defaults to the name)
 cmd_t() {
-    [ -n "${1:-}" ] || _die 'usage: git t <tag> [message]'
-    git tag -a "$1" -m "${2:-$1}"
+    force=''
+    case ${1:-} in -f|--force) force=1; shift ;; esac
+    [ -n "${1:-}" ] || _die 'usage: git t [-f] <tag> [message]'
+    name=$1
+
+    if [ -z "$force" ]; then
+        git rev-parse -q --verify "refs/tags/$name" >/dev/null 2>&1 &&
+            _die "tag '$name' already exists here - pick another, or \`git t -f $name\` to replace it"
+        for r in $(git remote); do
+            if out=$(git ls-remote --tags "$r" "refs/tags/$name" 2>/dev/null); then
+                [ -n "$out" ] &&
+                    _die "tag '$name' already exists on '$r' - pick another, or \`git t -f $name\` to tag anyway"
+            else
+                _warn "could not reach '$r' to check the name - carrying on"
+            fi
+        done
+    fi
+
+    if [ -n "$force" ]; then
+        git tag -a -f "$name" -m "${2:-$name}" || return 1
+    else
+        git tag -a "$name" -m "${2:-$name}" || return 1
+    fi
+    # shellcheck disable=SC2016  # backticks are prose here, not a command
+    printf 'tagged %s at %s (push it with `git o`)\n' "$name" "$(git rev-parse --short "$name^{commit}")"
 }
 
 # ----------------------------------------------------------------- log ----
