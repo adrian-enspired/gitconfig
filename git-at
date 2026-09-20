@@ -75,45 +75,411 @@ _resolve_ref() {
     if git rev-parse --verify --quiet "$1^{commit}" >/dev/null 2>&1; then
         printf '%s\n' "$1"; return
     fi
-    r=$(cmd_bg "$1" | head -n1)
+    r=$(cmd_b "$1" | head -n1)
     [ -n "$r" ] || _die "no matches for ref '$1'"
     printf '%s\n' "$r"
 }
 
-_merge_base() {
-    b=$(_resolve_ref "${1:-}") || return 1
-    mb=$(git merge-base "$b" HEAD) || _die "no merge base between '$b' and HEAD"
+# what the diff and patch commands compare against: the branch point with no
+# argument, or where HEAD diverged from the ref given. Same loud failures as
+# every other branch point lookup - a wrong range here is a wrong patch.
+#   $1: ref (commit-ish) or branch name pattern (optional)
+_base_ref() {
+    if [ -z "${1:-}" ]; then
+        b=$(_cur) || _die 'detached HEAD'
+        bp=$(_branch_point "$b") || return 1
+        printf '%s\n' "${bp##* }"
+        return 0
+    fi
+    r=$(_resolve_ref "$1") || return 1
+    mb=$(git merge-base "$r" HEAD 2>/dev/null) ||
+        _die "'$r' shares no history with HEAD, so there is no range to compare"
     printf '%s\n' "$mb"
+}
+
+# the ticket key linked to a branch, if any
+#   $1: branch (defaults to the current one)
+cmd_i() {
+    b=${1:-}
+    [ -n "$b" ] || b=$(_cur 2>/dev/null) || return 0
+    [ -n "$b" ] || return 0
+    # `KEY.slug` is what we produce; `KEY-slug` is what older branches use
+    printf '%s' "$b" | grep -oE '^[A-Za-z]+-[0-9]+' | head -n1 | tr '[:lower:]' '[:upper:]'
+    return 0
+}
+
+# ------------------------------------------------------------- settings ----
+#
+# Every setting is `at.<area>.<key>` in git config, overridable per call site by
+# the matching AT_* environment variable.
+
+# $1: config key   $2: environment variable   $3: default
+_cfg() {
+    eval "v=\${$2-}"
+    [ -n "$v" ] || { v=$(git config --get "$1" 2>/dev/null) || v=''; }
+    [ -n "$v" ] || v=${3:-}
+    printf '%s' "$v"
+}
+
+# ------------------------------------------------------------------ llm ----
+#
+# One contract for every backend: prompt on stdin, text on stdout. Which command
+# provides it is configuration, so a new backend costs no code. Nothing here is
+# load-bearing - a missing, slow or broken model degrades to the non-model path.
+
+# where the prompt files live (alongside the script unless configured otherwise)
+_rules() {
+    dir=$(_cfg at.llm.rules AT_LLM_RULES "$(dirname "$0")/rules")
+    printf '%s/%s.md\n' "$dir" "$1"
+}
+
+# run a command with a time limit, since macOS ships no timeout(1)
+#
+# The prompt arrives as a file rather than on our stdin because a background job
+# has its stdin redirected from /dev/null before anything else happens, so a
+# piped prompt never reaches the model.
+#   $1: seconds   $2: file to feed the command on stdin   rest: command
+_with_timeout() {
+    secs=$1; input=$2; shift 2
+    "$@" <"$input" &
+    job=$!
+    # the guard must not hold the caller's stdout: a command substitution waits
+    # for every process on the pipe, which would make every call take $secs
+    (sleep "$secs"; kill -TERM "$job" 2>/dev/null) >/dev/null 2>&1 &
+    guard=$!
+    wait "$job"; rc=$?
+    kill -TERM "$guard" 2>/dev/null
+    return $rc
+}
+
+# Models wrap answers in fences, announce what they are about to do, and add
+# trailers however firmly the rules say not to - a model-written `Co-Authored-By`
+# would credit work it did not do, and the ticket trailer is the caller's to add.
+_llm_clean() {
+    sed -E '/^[[:space:]]*```/d; /^[[:space:]]*(Co-[Aa]uthored-[Bb]y|issue|Signed-off-by):/Id' |
+        awk 'NF {seen=1} seen' |
+        awk '{l[NR]=$0} END {last=NR
+              while (last > 0 && l[last] ~ /^[[:space:]]*$/) last--
+              for (i = 1; i <= last; i++) print l[i]}'
+}
+
+# ask the configured model; prompt on stdin, text on stdout.
+# returns non-zero whenever the caller should fall back to its own behaviour.
+#   $1: feature (slug | commit | pr)
+_llm() {
+    feat=$1
+    up=$(printf '%s' "$feat" | tr '[:lower:]-' '[:upper:]_')
+    cmd=$(_cfg "at.llm.${feat}command" "AT_LLM_${up}_COMMAND")
+    [ -n "$cmd" ] || cmd=$(_cfg at.llm.command AT_LLM_COMMAND)
+    [ -n "$cmd" ] || { _warn "no model configured (at.llm.command) - skipping the $feat text"; return 1; }
+
+    secs=$(_cfg at.llm.timeout AT_LLM_TIMEOUT 60)
+    prompt=$(mktemp "${TMPDIR:-/tmp}/git-at-prompt.XXXXXX") || return 1
+    cat >"$prompt"
+    out=$(_with_timeout "$secs" "$prompt" sh -c "$cmd" | _llm_clean) || out=''
+    rm -f "$prompt"
+    [ -n "$out" ] || { _warn "the $feat model returned nothing - carrying on without it"; return 1; }
+    printf '%s\n' "$out"
+}
+
+# -------------------------------------------------------------- tickets ----
+#
+# Branches are named `<KEY>.<slug>`. `<KEY>-<slug>` is recognised because older
+# branches use it, but never produced.
+#
+# Keys whose prefix is listed in `at.ticket.ignored-prefixes` belong to some other
+# tracker - a retired one, or one git-at does not talk to. They are recognised,
+# linked and carried in trailers, but never looked up or transitioned. Nothing is
+# ignored until the list says so.
+
+# prefixes to treat as another tracker's, one per line
+_ignored_prefixes() {
+    v=${AT_IGNORED_PREFIXES-}
+    [ -n "$v" ] || v=$(git config --get-all at.ticket.ignored-prefixes 2>/dev/null) || v=''
+    printf '%s' "$v" | tr ',' ' ' | tr ' ' '\n' | grep . || true
+}
+
+# is this key another tracker's?
+_is_ignored_key() {
+    key=$(_upper "$1")
+    for p in $(_ignored_prefixes); do
+        p=$(_upper "${p%-}")
+        case $key in "$p"-*) return 0 ;; esac
+    done
+    return 1
+}
+
+_upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
+# a ticket key from an argument: bare digits take the configured prefix.
+# non-zero when the argument is not a ticket at all.
+_ticket_key() {
+    case ${1:-} in
+        '') return 1 ;;
+        *[!0-9]*) ;;
+        *) p=$(_cfg at.ticket.prefix AT_TPREFIX)
+           [ -n "$p" ] || _die "'$1' is a bare number and no ticket prefix is set (at.ticket.prefix)"
+           printf '%s-%s\n' "$(_upper "$p")" "$1"
+           return 0 ;;
+    esac
+    printf '%s' "$1" | grep -Eq '^[A-Za-z]+-[0-9]+$' || return 1
+    printf '%s\n' "$(_upper "$1")"
+}
+
+# lowercase kebab-case, 40 characters at most, never cut mid-word
+_slugify() {
+    s=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' |
+        sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    if [ ${#s} -gt 40 ]; then
+        s=$(printf '%s' "$s" | cut -c1-40 | sed -E 's/-[^-]*$//; s/-+$//')
+    fi
+    printf '%s\n' "$s"
+}
+
+_word_count() {
+    [ -n "$1" ] || { printf '0\n'; return; }
+    printf '%s' "$1" | tr '-' '\n' | grep -c .
+}
+
+# POST a graphql body to linear; prints the response. no model involved: a tracker
+# call has a fixed shape, so it costs nothing to make it deterministic.
+_linear_post() {
+    api=$(_cfg at.linear.apikey AT_LINEAR_APIKEY)
+    [ -n "$api" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    command -v jq >/dev/null 2>&1 || { _warn 'jq is needed to read linear responses'; return 1; }
+    ep=$(_cfg at.linear.endpoint AT_LINEAR_ENDPOINT 'https://api.linear.app/graphql')
+    printf '%s' "$1" | curl -fsS -X POST "$ep" \
+        -H "Authorization: $api" -H 'Content-Type: application/json' --data @- 2>/dev/null
+}
+
+# the ticket title from linear. an ignored key has no tracker here to ask.
+_linear_title() {
+    _is_ignored_key "$1" && return 1
+    # shellcheck disable=SC2016  # $id is a graphql variable, not a shell one
+    body='{"query":"query($id:String!){issue(id:$id){identifier title}}","variables":{"id":"'"$1"'"}}'
+    r=$(_linear_post "$body") || return 1
+    t=$(printf '%s' "$r" | jq -r '.data.issue.title // empty' 2>/dev/null) || return 1
+    [ -n "$t" ] || return 1
+    printf '%s\n' "$t"
+}
+
+# move a ticket to a named workflow state. two calls: the state ids belong to the
+# issue's own team, so they have to be read before anything can be set.
+#   $1: ticket key   $2: state name
+_linear_move() {
+    _is_ignored_key "$1" && return 1
+    # shellcheck disable=SC2016  # graphql variables
+    body='{"query":"query($id:String!){issue(id:$id){id team{states{nodes{id name}}}}}","variables":{"id":"'"$1"'"}}'
+    r=$(_linear_post "$body") || return 1
+    uuid=$(printf '%s' "$r" | jq -r '.data.issue.id // empty' 2>/dev/null)
+    state=$(printf '%s' "$r" |
+        jq -r --arg n "$2" '.data.issue.team.states.nodes[]? | select(.name|ascii_downcase == ($n|ascii_downcase)) | .id' 2>/dev/null |
+        head -n1)
+    [ -n "$uuid" ] && [ -n "$state" ] || return 1
+    # shellcheck disable=SC2016  # graphql variables
+    m='{"query":"mutation($id:String!,$s:String!){issueUpdate(id:$id,input:{stateId:$s}){success}}","variables":{"id":"'"$uuid"'","s":"'"$state"'"}}'
+    out=$(_linear_post "$m") || return 1
+    printf '%s' "$out" | jq -e '.data.issueUpdate.success == true' >/dev/null 2>&1
+}
+
+# move the branch's ticket to the status configured for a command, if any.
+# never fatal: a tracker that is unreachable must not stop local work.
+#   $1: command name   $2: branch (defaults to the current one)
+_ticket_move() {
+    want=$(_cfg "at.status.$1" "AT_STATUS_$(_upper "$1")")
+    [ -n "$want" ] || return 0
+    key=$(cmd_i "${2:-}") || return 0
+    [ -n "$key" ] || return 0
+    _is_ignored_key "$key" && return 0
+    _linear_move "$key" "$want" || _warn "could not move $key to '$want' - carrying on"
+    return 0
+}
+
+# a slug for a ticket: from its title, shortened by the model when it runs long
+_ticket_slug() {
+    key=$1
+    title=$(_linear_title "$key") ||
+        _die "cannot read the title for $key - name the slug yourself: \`git dk $key <slug>\`"
+    slug=$(_slugify "$title")
+    [ "$(_word_count "$slug")" -gt 4 ] || { printf '%s\n' "$slug"; return 0; }
+
+    short=$({ cat "$(_rules slug)" 2>/dev/null
+              printf '\n\n## Ticket title\n\n%s\n' "$title"; } | _llm slug) || short=''
+    [ -n "$short" ] && short=$(_slugify "$short")
+    if [ -n "$short" ] && [ "$(_word_count "$short")" -le 4 ]; then
+        printf '%s\n' "$short"
+    else
+        printf '%s\n' "$(printf '%s' "$slug" | cut -d- -f1-4)"
+    fi
+}
+
+# the branch name for `dk` / `uk` arguments
+#   $1: ticket, slug, or complete branch name   $2: slug (optional)
+_branch_name() {
+    [ -n "${1:-}" ] || _die 'usage: <ticket>[ <slug>] | <slug> | <ticket>.<slug>'
+    case $1 in
+        *.*) printf '%s\n' "$1"; return 0 ;;    # already a complete branch name
+    esac
+    key=$(_ticket_key "$1") || key=''
+    if [ -z "$key" ]; then
+        [ -n "${2:-}" ] && _die "'$1' is not a ticket, so '$2' has nothing to attach to"
+        printf '%s\n' "$(_slugify "$1")"
+        return 0
+    fi
+    if [ -n "${2:-}" ]; then
+        slug=$(_slugify "$2")
+    else
+        slug=$(_ticket_slug "$key") || return 1
+    fi
+    [ -n "$slug" ] || _die "empty slug for $key"
+    printf '%s.%s\n' "$key" "$slug"
+}
+
+# the branch name these arguments produce (internal)
+cmd__branch_name() { _branch_name "$@"; }
+
+# ---------------------------------------------------------- branch point ----
+#
+# Where a branch's own work begins. Recorded per branch rather than derived,
+# because a merge base stops being the answer the moment the parent branch is
+# squash-merged: see docs/adr/0001-tracked-branch-point.md.
+#
+# Resolution never degrades silently - an unusable explicit or recorded value
+# stops the command instead of falling through to the next source.
+
+_is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
+
+_commit_of() { git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null; }
+
+# resolve a branch point; prints "<source> <commit>"
+#   $1: branch   $2: explicit commit-ish (optional)
+_branch_point() {
+    b=$1
+    if [ -n "${2:-}" ]; then
+        c=$(_commit_of "$2") || _die "cannot resolve '$2' to a commit"
+        printf 'explicit %s\n' "$c"
+        return 0
+    fi
+
+    rec=$(git config --get "branch.$b.atbase" 2>/dev/null) || rec=''
+    if [ -n "$rec" ]; then
+        # a rebase the user finished by hand never returns to `dr`, leaving the
+        # record behind. the value dr parked is an ancestor only once that rebase
+        # completed, which makes it the newer of the two whenever it fits.
+        pend=$(git config --get "branch.$b.atbasepending" 2>/dev/null) || pend=''
+        if [ -n "$pend" ]; then
+            p=$(_commit_of "$pend") || p=''
+            if [ -n "$p" ] && _is_ancestor "$p" "$b"; then
+                git config "branch.$b.atbase" "$p"
+                git config --unset "branch.$b.atbasepending"
+                printf 'promoted %s\n' "$p"
+                return 0
+            fi
+        fi
+        c=$(_commit_of "$rec") || c=''
+        if [ -n "$c" ] && _is_ancestor "$c" "$b"; then
+            printf 'recorded %s\n' "$c"
+            return 0
+        fi
+        _die "branch point recorded for '$b' is stale ($rec is not an ancestor) - pass a commit-ish, or re-record it with \`git dr\`"
+    fi
+
+    d=$(cmd_d) || return 1
+    mb=$(git merge-base "$d" "$b" 2>/dev/null) ||
+        _die "'$d' and '$b' share no history, so where '$b' begins cannot be worked out - record it with \`git config branch.$b.atbase <commit>\`, or name it on the command line"
+    printf 'merge-base %s\n' "$mb"
+}
+
+# is this commit's change already present in $2 (default: the default branch)?
+#
+# Tested against a temporary index holding $2's tree, so the working tree and the
+# real index are untouched. This is the only thing that sees through a squash
+# merge; rebase's own already-applied check matches patch-ids, which a squash
+# destroys.
+#   $1: commit   $2: ref to test against (defaults to the default branch)
+_already_landed() {
+    c=$(_commit_of "$1") || return 1
+    onto=${2:-$(cmd_d)}
+    _is_ancestor "$c" "$onto" && return 0
+
+    # merge commits have no single-parent diff worth testing
+    [ "$(git rev-list --no-walk --parents -n1 "$c" | wc -w | tr -d ' ')" -le 2 ] || return 1
+
+    t=$(mktemp "${TMPDIR:-/tmp}/git-at-landed.XXXXXX") || return 1
+    git diff-tree -p --no-color "$c^" "$c" >"$t" 2>/dev/null
+    if [ ! -s "$t" ]; then           # root commit, or an empty change
+        rm -f "$t"
+        return 1
+    fi
+    GIT_INDEX_FILE="$t.idx" git read-tree "$onto^{tree}" 2>/dev/null || {
+        rm -f "$t" "$t.idx"
+        return 1
+    }
+    GIT_INDEX_FILE="$t.idx" git apply --cached --reverse --check "$t" >/dev/null 2>&1
+    rc=$?
+    rm -f "$t" "$t.idx"
+    return $rc
+}
+
+# is a commit's change already in the default branch? (internal; status only)
+#   $1: commit   $2: ref to test against (optional)
+cmd__landed() {
+    [ -n "${1:-}" ] || _die 'usage: git _landed <commit> [ref]'
+    _already_landed "$1" "${2:-}"
+}
+
+# resolve the branch point of the current branch: "<source> <commit>"
+#   $1: commit-ish (optional)
+cmd__branch_point() {
+    b=$(_cur) || _die 'detached HEAD'
+    _branch_point "$b" "${1:-}"
 }
 
 # -------------------------------------------------------------- branches ----
 
-# list branches on refs (defaults to heads (local); use `br` for remotes)
-#   $1: ref scope
+# list branches, newest first
+#   $1: pattern, matched case-insensitively against the listing
+#   -r <remote>: that remote's branches, fetched first, instead of the local ones
+#   -i: prefix each line with its author date (the date is matched by $1 too)
 cmd_b() {
-    scope=${1:-heads}
-    git for-each-ref --sort='-authordate' --format='%(refname:short)' "refs/$scope" |
-        case "$scope" in remotes*) grep -v '/HEAD$' || true ;; *) cat ;; esac
+    remote=''; info=''; pattern=''
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -r) [ -n "${2:-}" ] || _die 'git b: -r takes a remote name'
+                remote=$2; shift 2 ;;
+            -i) info=1; shift ;;
+            --) shift; break ;;
+            -*) _die "git b: unknown option: $1" ;;
+            *)  [ -z "$pattern" ] || _die "git b: one pattern at a time (got '$pattern' and '$1')"
+                pattern=$1; shift ;;
+        esac
+    done
+
+    scope=heads
+    if [ -n "$remote" ]; then
+        git remote get-url "$remote" >/dev/null 2>&1 || _die "no such remote: $remote"
+        git fetch "$remote" --prune >/dev/null 2>&1 ||
+            _warn "fetch from '$remote' failed - listing what is already here"
+        scope="remotes/$remote"
+    fi
+
+    fmt='%(refname:short)'
+    [ -n "$info" ] &&
+        fmt=' %(color:green)%(authordate:iso8601)%09%(color:white)%(refname:short)%(color:reset)'
+
+    git for-each-ref --sort='-authordate' --format="$fmt" "refs/$scope" |
+        _b_drop_head "$remote" | _b_match "$pattern"
 }
 
-# `b` with fancy info
-cmd_bi() {
-    scope=${1:-heads}
-    git for-each-ref --sort='-authordate' \
-        --format=' %(color:green)%(authordate:iso8601)%09%(color:white)%(refname:short)%(color:reset)' \
-        "refs/$scope" |
-        case "$scope" in remotes*) grep -v '/HEAD$' || true ;; *) cat ;; esac
+# a remote's HEAD is a symref, not a branch anyone wants listed
+_b_drop_head() {
+    if [ -n "$1" ]; then grep -v '/HEAD$' || true; else cat; fi
 }
 
-# list branches on remotes
-#   $1: remote name (defaults to all remotes)
-cmd_br() {
-    if [ -n "${1:-}" ]; then git fetch "$1" --prune; else git fetch --all --prune; fi
-    cmd_b "remotes${1:+/$1}"
+_b_match() {
+    if [ -n "$1" ]; then grep -i -- "$1" || true; else cat; fi
 }
-
-# `br` with fancy info
-cmd_bri() { cmd_bi "remotes${1:+/$1}"; }
 
 # delete local branches which have been merged
 #   $1: "-y" = skip confirmation
@@ -127,11 +493,19 @@ cmd_bd() {
     else
         _die "no local or remote ref for '$d' - run \`git ds\` first"
     fi
-    m=$(git branch --merged "$ref" --format='%(refname:short)' | grep -vx "$d" | grep -vx "$cur")
+    # judged by content, not by ancestry: `git branch --merged` never sees a
+    # squash-merged branch, and squash is how the team's PRs land.
+    m=''
+    for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do
+        [ "$b" = "$d" ] || [ "$b" = "$cur" ] && continue
+        _already_landed "$b" "$ref" && m="${m}${m:+
+}$b"
+    done
     [ -n "$m" ] || { printf 'no branches to delete\n'; return 0; }
-    printf 'will delete (merged into %s):\n%s\n' "$ref" "$m"
+    printf 'will delete (landed on %s):\n%s\n' "$ref" "$m"
     [ "${1:-}" = '-y' ] || _confirm 'proceed? [y/N] ' || return 1
-    printf '%s\n' "$m" | xargs git branch -d
+    # -D, because -d refuses a branch git cannot see as merged
+    printf '%s\n' "$m" | xargs git branch -D
 }
 
 # force-delete local branch(es); never the default or current branch
@@ -153,61 +527,206 @@ cmd_bdf() {
     fi
 }
 
-# grep local branch names (use `bgr` for remotes)
-#   $1: pattern
-cmd_bg()  { cmd_b  | grep -i "$1"; }
-cmd_bgi() { cmd_bi | grep -i "$1"; }
+# record where a remote branch started. the PR's base branch is the only place
+# that fact survives for a stacked branch, so ask `gh` for it before falling back
+# to the default branch.
+#   $1: local branch   $2: remote-tracking branch (remote/name)
+_record_remote_base() {
+    l=$1; r=$2
+    d=$(cmd_d) || return 0
+    remote=${r%%/*}
+    base=''
+    if command -v gh >/dev/null 2>&1 && [ "$(cmd_oh 2>/dev/null)" = github.com ]; then
+        base=$(gh pr view "${r#*/}" --json baseRefName -q .baseRefName 2>/dev/null) || base=''
+    fi
+    [ "$base" = "$d" ] && base=''
+    ref=$d
+    if [ -n "$base" ]; then
+        # only a local parent can be restacked onto; a remote-only one still dates the base
+        git show-ref --verify --quiet "refs/heads/$base" && git config "branch.$l.atparent" "$base"
+        for cand in "$base" "$remote/$base"; do
+            git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1 && { ref=$cand; break; }
+        done
+    fi
+    mb=$(git merge-base "$ref" "$l" 2>/dev/null) || return 0
+    git config "branch.$l.atbase" "$mb"
+}
 
-# grep remote branch names
-#   $1: pattern
-#   $2: remote (defaults to all remotes)
-cmd_bgr()  { cmd_br  "${2:-}" | grep -i "$1"; }
-cmd_bgri() { cmd_bri "${2:-}" | grep -i "$1"; }
+# ------------------------------------------------------------- checkout ----
 
-# grep branch names and check out first match
-#   $1: pattern (defaults to the default branch); an exact branch name always wins over a substring match.
+# check out a branch by name or pattern
+#   $1: pattern; an exact local branch name always wins over a substring match.
+#       with no pattern, the default branch.
+#   -r <remote>: check out that remote's branch, tracking it as `r/<remote>/<name>`
 cmd_bk() {
-    p=${1:-$(cmd_d)}
+    remote=''; pattern=''
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -r) [ -n "${2:-}" ] || _die 'git bk: -r takes a remote name'
+                remote=$2; shift 2 ;;
+            --) shift; break ;;
+            -*) _die "git bk: unknown option: $1" ;;
+            *)  [ -z "$pattern" ] || _die 'git bk: one pattern at a time'
+                pattern=$1; shift ;;
+        esac
+    done
+
+    if [ -n "$remote" ]; then
+        [ -n "$pattern" ] || _die 'git bk: -r needs a pattern to match against'
+        b=$(cmd_b "$pattern" -r "$remote" | head -n1)
+        [ -n "$b" ] || _die "no branch matching '$pattern' on $remote"
+        l="r/$b"
+        if git show-ref --verify --quiet "refs/heads/$l"; then
+            git switch "$l"
+        else
+            git switch -c "$l" --track "$b" || return 1
+            _record_remote_base "$l" "$b"
+        fi
+        return 0
+    fi
+
+    p=${pattern:-$(cmd_d)}
     if git show-ref --verify --quiet "refs/heads/$p"; then
         b=$p
     else
-        b=$(cmd_bg "$p" | head -n1)
+        b=$(cmd_b "$p" | head -n1)
     fi
     [ -n "$b" ] || _die "no branch matching: $p"
     git switch "$b"
 }
 
-# grep remote branch names; check out and track first match
-#   $1: pattern
-#   $2: remote (defaults to all remotes)
-cmd_bkr() {
-    b=$(cmd_bgr "$1" "${2:-}" | head -n1)
-    [ -n "$b" ] || _die "no remote branch matching: $1"
-    l="r/$b"
-    if git show-ref --verify --quiet "refs/heads/$l"; then
-        git switch "$l"
-    else
-        git switch -c "$l" --track "$b"
-    fi
+# branch from the default branch
+#   $1: new branch name
+cmd_dk() {
+    n=$(_branch_name "$@") || return 1
+    cmd_ds >/dev/null || return 1
+    d=$(cmd_d) || return 1
+    git switch -q -c "$n" "$d" || return 1
+    git config "branch.$n.atbase" "$(_commit_of "$d")"
+    printf 'on %s\n' "$n"
+    _ticket_move dk "$n"
 }
 
-# checkout the default branch (same as bare `bk`)
-cmd_bkd() { git switch "$(cmd_d)"; }
+# branch from the current branch, stacking on it (and quicksave)
+#   $1: new branch name
+cmd_uk() {
+    save=1
+    case ${1:-} in --no-f5) save=''; shift ;; esac
+    parent=$(_cur) || _die 'detached HEAD'
+    n=$(_branch_name "$@") || return 1
+    tip=$(_commit_of HEAD) || _die 'no commits to branch from'
+    git switch -q -c "$n" || return 1
+    d=$(cmd_d) || return 1
+    # branching off the default branch is not a stack, so there is no parent to record
+    [ "$parent" = "$d" ] || git config "branch.$n.atparent" "$parent"
+    git config "branch.$n.atbase" "$tip"
+    printf 'on %s\n' "$n"
+    [ -n "$save" ] && { cmd_f5 || return 1; }
+    _ticket_move uk "$n"
+}
 
 # ------------------------------------------------------ commit / staging ----
 
-# commit (appends "issue: <jira-id>" trailer when branch is linked to jira)
+# the scopes this repo already uses, so a generated one joins the vocabulary
+# rather than inventing a synonym for it
+_scopes() {
+    git log -n 200 --format='%s' 2>/dev/null |
+        sed -nE 's/^[a-z]+\(([^)]+)\).*/\1/p' | sort | uniq -c | sort -rn |
+        awk '{print $2}' | head -n 20 | tr '\n' ' '
+}
+
+# write a generated commit message to $1; non-zero when there is nothing to say
+#   $1: destination file   $2: "amend" when the message covers an amended commit
+_gen_commit_message() {
+    dest=$1
+    if [ "${2:-}" = amend ]; then
+        range='HEAD~1'
+        git rev-parse --verify --quiet HEAD~1 >/dev/null 2>&1 || range=''
+    else
+        range=''
+    fi
+    stat=$(git diff --cached --stat ${range:+"$range"})
+    [ -n "$stat" ] || return 1
+    known=$(_scopes)
+    {
+        cat "$(_rules commit)" 2>/dev/null
+        printf '\n\n---\n\n## Scopes already in use\n\n%s\n' "${known:-none yet}"
+        printf '\n## Diffstat\n\n%s\n' "$stat"
+        printf '\n## Staged diff\n\n'
+        git diff --cached ${range:+"$range"} | head -n 400
+    } | _llm commit >"$dest" || return 1
+    [ -s "$dest" ]
+}
+
+# commit; generates the message when none is given, adds the ticket trailer
+#   -u | --all: stage tracked | everything first
+#   -y: commit without opening the editor
+#   --verify: run the hooks (they are skipped by default)
+#   --cc [<name> <email>]: add a co-author trailer, valued from at.commit.coauthor
+#   $@: passed through to `git commit`
 cmd_c() {
-    id=$(cmd_j)
-    amend=''
-    # only auto-amend when the caller didn't already ask for it
-    case " $* " in
-        *' --amend '*) ;;
-        *) [ "$(git log -1 --pretty=%s 2>/dev/null)" = "working" ] && amend='--amend' ;;
+    stage=''; edit=1; verify='--no-verify'; cc=''; ccval=''
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -u)       stage=u; shift ;;
+            --all)    stage=all; shift ;;
+            -y)       edit=''; shift ;;
+            --verify) verify=''; shift ;;
+            --cc)     cc=1; shift
+                      case ${1:-} in ''|-*) ;; *) ccval=$1; shift ;; esac ;;
+            --)       shift; break ;;
+            *)        break ;;
+        esac
+    done
+
+    case $stage in
+        u)   cmd_u >/dev/null || return 1 ;;
+        all) cmd_all || return 1 ;;
     esac
+
+    # a quicksave is scaffolding: committing on top of one replaces it outright
+    amend=''
+    case " $* " in
+        *' --amend '*) amend='given' ;;
+        *) [ "$(git log -1 --pretty=%s 2>/dev/null)" = 'working' ] && amend='--amend' ;;
+    esac
+
+    # does the caller already have a message?
+    given=''
+    for a in "$@"; do
+        case $a in
+            -m|--message|-F|--file|-C|--reuse-message|-c|--reedit-message|--no-edit|-m*|--message=*|--file=*)
+                given=1; break ;;
+        esac
+    done
+
+    msg=''
+    if [ -z "$given" ]; then
+        msg=$(mktemp "${TMPDIR:-/tmp}/git-at-msg.XXXXXX") || return 1
+        if ! _gen_commit_message "$msg" "$([ -n "$amend" ] && printf amend)"; then
+            rm -f "$msg"
+            [ -n "$edit" ] || _die 'no message given and none could be generated - use -m, or configure at.llm.command'
+            msg=''
+        fi
+    fi
+
+    if [ -n "$cc" ]; then
+        [ -n "$ccval" ] || ccval=$(_cfg at.commit.coauthor AT_COMMIT_COAUTHOR)
+        [ -n "$ccval" ] || _die 'no co-author configured - set at.commit.coauthor, or pass --cc "<name> <email>"'
+        set -- --trailer "Co-Authored-By: $ccval" "$@"
+    fi
+    id=$(cmd_i)
     [ -n "$id" ] && set -- --trailer "issue: $id" "$@"
-    # shellcheck disable=SC2086
-    git commit --no-verify -S $amend "$@"
+
+    [ -n "$msg" ] && set -- -F "$msg" "$@" && [ -n "$edit" ] && set -- --edit "$@"
+    [ "$amend" = '--amend' ] && set -- --amend "$@"
+
+    # signing is a config decision (commit.gpgSign), not this command's to force
+    # shellcheck disable=SC2086  # $verify is a flag or nothing
+    git commit $verify "$@"
+    rc=$?
+    [ -n "$msg" ] && rm -f "$msg"
+    return $rc
 }
 
 # update (stage tracked changes)
@@ -220,17 +739,28 @@ cmd_all() {
     git add --all && git status
 }
 
-# amend last commit
-#   $1: "-u" = `git u` or "--all" = `git all`
+# amend the last commit, keeping its message
+#   -u | --all: stage tracked | everything first
+#   --regen: write a new message from the amended diff instead of keeping it
+#   $@: passed through to `git commit`
+# shellcheck disable=SC2120  # callers may pass commit args through
 cmd_um() {
-    case "${1:-}" in
-        --all) cmd_all || return 1; shift ;;
-        -u)    cmd_u   || return 1; shift ;;
-    esac
-    cmd_c --amend --no-edit --no-verify "$@"
+    regen=''
+    while [ $# -gt 0 ]; do
+        case ${1:-} in
+            --all)   cmd_all || return 1; shift ;;
+            -u)      cmd_u >/dev/null || return 1; shift ;;
+            --regen) regen=1; shift ;;
+            *)       break ;;
+        esac
+    done
+    # our own flags go first: cmd_c stops reading flags at the first argument
+    [ -n "$regen" ] && { cmd_c "$@" --amend; return $?; }
+    cmd_c "$@" --amend --no-edit
 }
 
-# quicksave. returns 0 when there was nothing to save (so it chains safely).
+# quicksave: everything in the tree, into a rolling `working` commit
+# Returns 0 when there was nothing to save, so it chains safely.
 cmd_f5() {
     d=$(cmd_d)
     cur=$(_cur || true)
@@ -244,9 +774,6 @@ cmd_f5() {
     fi
 }
 
-# status
-cmd_s() { git log -1 --pretty=tformat:'At %h [%s]'; git status; }
-
 # create a tag
 #   $1: tag name
 #   $2: message (defaults to $1)
@@ -255,66 +782,172 @@ cmd_t() {
     git tag -a "$1" -m "${2:-$1}"
 }
 
-# --------------------------------------------------------- branch + sync ----
+# ----------------------------------------------------------------- log ----
+# status, plus where this branch sits in a stack
+cmd_s() {
+    git log -1 --pretty=tformat:'At %h [%s]'
+    b=$(_cur 2>/dev/null) || b=''
+    if [ -n "$b" ]; then
+        key=$(cmd_i "$b")
+        parent=$(git config --get "branch.$b.atparent" 2>/dev/null) || parent=''
+        base=$(git config --get "branch.$b.atbase" 2>/dev/null) || base=''
+        [ -n "$key" ] && printf 'Ticket %s\n' "$key"
+        [ -n "$parent" ] && printf 'Stacked on %s\n' "$parent"
+        if [ -n "$base" ] && c=$(_commit_of "$base"); then
+            printf 'From %s (%s commit(s) since)\n' \
+                "$(git rev-parse --short "$c")" "$(git rev-list --count "$c..$b" 2>/dev/null)"
+        fi
+    fi
+    git status
+}
+
+# ----------------------------------------------------------------- sync ----
 
 # bring origin's default branch up to date with the fork parent.
 # github: `gh repo sync`. anything else: fetch upstream and push it to origin.
 _sync_fork() {
     d=$1
-    if [ "$(cmd_oh)" = github.com ] && command -v gh >/dev/null 2>&1; then
-        gh repo sync "$(cmd_oor)"
+    if [ "$(cmd_oh 2>/dev/null)" = github.com ] && command -v gh >/dev/null 2>&1; then
+        gh repo sync --force "$(cmd_oor)"
     else
+        # --force to match what `gh repo sync --force` does: origin's default
+        # branch is meant to be a copy of upstream's, not a place to commit
         git fetch upstream --prune &&
-            git push origin "refs/remotes/upstream/$d:refs/heads/$d"
+            git push --force origin "refs/remotes/upstream/$d:refs/heads/$d"
     fi
 }
 
-# sync the default branch with origin.
+# sync the default branch: from upstream first when the repo is a fork
+#   -y: overwrite a diverged origin, and reset a diverged local branch, unasked
 cmd_ds() {
+    yes=''
+    case ${1:-} in -y|--yes) yes=1 ;; esac
     d=$(cmd_d) || return 1
-    # when an `upstream` remote exists the repo is treated as a fork, so origin is
-    # first sync'd from upstream; with no `upstream` remote that step is skipped.
-    if git remote get-url upstream >/dev/null 2>&1; then
-        _sync_fork "$d" >/dev/null || _warn "warning: upstream sync failed - continuing with origin only"
+    if ! git remote get-url origin >/dev/null 2>&1; then
+        _warn 'no origin remote - nothing to sync'
+        return 0
     fi
-    git switch "$d" || return 1
-    # --ff-only is authoritative here regardless of pull.rebase: if the default
-    # branch has diverged from origin, that is a problem to look at, not to silently rebase away.
-    git pull --ff-only origin "$d"
+
+    # an `upstream` remote means the repo is a fork, so origin is sync'd from it
+    if git remote get-url upstream >/dev/null 2>&1; then
+        git fetch -q origin --prune 2>/dev/null
+        git fetch -q upstream --prune 2>/dev/null
+        # origin's default branch is meant to be strictly downstream of upstream.
+        # anything on it that upstream lacks is about to be thrown away, and a
+        # forced sync is not the place to find that out afterwards.
+        extra=$(git rev-list "refs/remotes/upstream/$d..refs/remotes/origin/$d" 2>/dev/null) || extra=''
+        if [ -n "$extra" ] && [ -z "$yes" ]; then
+            _warn "origin/$d has commits upstream does not:"
+            git log --oneline "refs/remotes/upstream/$d..refs/remotes/origin/$d" >&2
+            _confirm "overwrite origin/$d from upstream/$d? [y/N] " || return 1
+        fi
+        _sync_fork "$d" >/dev/null 2>&1 ||
+            _warn 'warning: upstream sync failed - continuing with origin only'
+        git fetch -q origin --prune 2>/dev/null
+    fi
+
+    git switch -q "$d" || return 1
+    # --ff-only is authoritative here regardless of pull.rebase: a diverged local
+    # default branch is a thing to look at, not to silently rebase away
+    git pull -q --ff-only origin "$d" 2>/dev/null && return 0
+
+    _warn "local $d has diverged from origin/$d:"
+    git log --oneline "refs/remotes/origin/$d..$d" >&2
+    [ -n "$yes" ] || _confirm "reset $d to origin/$d? [y/N] " || return 1
+    git reset -q --hard "refs/remotes/origin/$d"
 }
 
-# branch from default branch
-#   $1: new branch name
-cmd_dk() {
-    [ -n "${1:-}" ] || _die 'usage: git dk <branch>'
-    cmd_ds && git switch -c "$1" "$(cmd_d)"
+# what this branch should be rebased onto: its parent while the parent is open,
+# the default branch once the parent has landed. prints the ref.
+#   $1: branch   $2: default branch   $3: recorded branch point   $4: restack choice
+_dr_target() {
+    b=$1; d=$2; base=$3; choice=$4
+    parent=$(git config --get "branch.$b.atparent" 2>/dev/null) || parent=''
+    [ -n "$parent" ] || { printf '%s\n' "$d"; return 0; }
+
+    if git show-ref --verify --quiet "refs/heads/$parent"; then
+        tip=$(_commit_of "$parent")
+    else
+        tip=$base        # the parent's tip as it was when the branch was cut
+    fi
+
+    if _already_landed "$tip" "$d"; then
+        git config --unset "branch.$b.atparent" 2>/dev/null || true
+        printf '%s\n' "$d"
+        return 0
+    fi
+    git show-ref --verify --quiet "refs/heads/$parent" ||
+        _die "parent branch '$parent' is gone and has not landed on $d - pass a commit-ish to rebase from"
+
+    # a parent that is behind the default branch drags the child back with it
+    if ! _is_ancestor "$d" "$parent"; then
+        case $choice in
+            yes) _warn "restacking '$parent' first"
+                 git switch -q "$parent" || return 1
+                 cmd_dr --restack || return 1
+                 git switch -q "$b" || return 1 ;;
+            no)  ;;
+            *)   _die "parent '$parent' is behind $d - rebase it first with \`git dr\` on '$parent', or pass --restack (do it now) or --no-restack (rebase onto it anyway)" ;;
+        esac
+    fi
+    printf '%s\n' "$parent"
 }
 
-# rebase the current branch on the default branch
+# stop before replaying work that is already in the default branch: a squashed
+# parent looks like the branch's own commits from a merge base's point of view.
+#   $1: base   $2: branch   $3: default branch
+_check_replay() {
+    for c in $(git rev-list --reverse "$1..$2"); do
+        if _already_landed "$c" "$3"; then
+            _die "$(git log -1 --format='%h %s' "$c") has already landed on $3 - the branch point is wrong. pass the right one: \`git dr <commit-ish>\`"
+        fi
+    done
+}
+
+# rebase the current branch onto its parent, or onto the default branch
+#   --restack: rebase stale ancestors first   --no-restack: rebase onto them as they are
+#   $1: branch point (commit-ish; defaults to the recorded one, else the merge base)
 cmd_dr() {
+    choice=''
+    while [ $# -gt 0 ]; do
+        case ${1:-} in
+            --restack)    choice=yes; shift ;;
+            --no-restack) choice=no;  shift ;;
+            --)           shift; break ;;
+            -*)           _die "git dr: unknown option: $1" ;;
+            *)            break ;;
+        esac
+    done
+
     b=$(_cur) || _die 'detached HEAD'
-    cmd_ds || return 1
-    git switch "$b" || return 1
     d=$(cmd_d) || return 1
-    git rebase --onto "$d" "$(git merge-base "$d" "$b")" "$b"
-}
+    [ "$b" = "$d" ] && _die "on $d - checkout a branch first"
+    git diff --quiet HEAD 2>/dev/null || _die 'uncommitted changes - commit or stash first'
 
-# branch from current branch (and quicksave)
-#   $1: new branch name
-cmd_uk() {
-    [ -n "${1:-}" ] || _die 'usage: git uk <branch>'
-    git switch -c "$1" && cmd_f5
-}
+    cmd_ds >/dev/null || { git switch -q "$b"; _die 'sync failed'; }
+    git switch -q "$b" || return 1
 
-# `uk` and rebase on default branch
-#   $1: new branch name
-cmd_duk() { cmd_uk "$1" && cmd_dr; }
+    bp=$(_branch_point "$b" "${1:-}") || return 1
+    base=${bp##* }
+    _warn "branch point: ${bp%% *} $(git rev-parse --short "$base") ($(git rev-list --count "$base..$b") to replay)"
+    _check_replay "$base" "$b" "$d"
+
+    onto=$(_dr_target "$b" "$d" "$base" "$choice") || return 1
+    tip=$(_commit_of "$onto") || _die "cannot resolve '$onto'"
+    [ "$tip" = "$base" ] && { printf 'already up to date with %s\n' "$onto"; return 0; }
+
+    # parked for the resolver: a rebase finished by hand never comes back here
+    git config "branch.$b.atbasepending" "$tip"
+    git rebase --onto "$onto" "$base" "$b" || return 1
+    git config "branch.$b.atbase" "$tip"
+    git config --unset "branch.$b.atbasepending" 2>/dev/null || true
+}
 
 # ----------------------------------------------------------------- diffs ----
 
-# diff from a branch's merge base (where it was checked out from)
-#   $1: ref (commit-ish) or branch name pattern (defaults to the default branch)
-cmd_fb() { git diff "$(_merge_base "${1:-}")"; }
+# diff from the branch point: this branch's own work, not its parent's
+#   $1: ref (commit-ish) or branch name pattern (defaults to the branch point)
+cmd_fb() { r=$(_base_ref "${1:-}") || return 1; git diff "$r"; }
 
 # `fb` from the default branch, after syncing it
 cmd_fd() {
@@ -336,20 +969,20 @@ cmd_fk() { cmd_fb "$(cmd_d)"; }
 # replaces its own previous output and nothing else.
 #
 #   <base>/<repo>/<branch>/pf/     format-patch series (0001-*.patch, ...)
-#   <base>/<repo>/<branch>/pb     flat, merge-base..HEAD      (committed work)
-#   <base>/<repo>/<branch>/pall   flat, merge-base..worktree  (everything)
+#   <base>/<repo>/<branch>/pb     flat, branch point..HEAD      (committed work)
+#   <base>/<repo>/<branch>/pall   flat, branch point..worktree  (everything)
 #   <base>/<repo>/<branch>/pw     flat, HEAD..worktree        (uncommitted work)
 #
-# <base> is $GIT_PATCH_DIR, else `git config patch.dir`, else ~/patches.
+# <base> is $AT_PATCH_DIR, else `git config at.patch.dir`, else ~/patches.
 #
 # Shared options for pf / pb / pall / pw, before any other argument:
 #
 #   -           write to stdout instead of a file.
 #   -u          include untracked files (temporarily marked intent-to-add).
 #
-# The destination is not a per-command option: set it once with `patch.dir`, or
-# override it per call site with GIT_PATCH_DIR= (same shape as J_TASKPREFIX= /
-# JK_TRANSITION= for the jira commands).
+# The destination is not a per-command option: set it once with `at.patch.dir`, or
+# override it per call site with AT_PATCH_DIR= (the same shape as every other
+# setting: `at.<area>.<key>` in config, AT_* in the environment).
 #
 # Each command prints the path it wrote, so `f=$(git pb)` works.
 
@@ -362,7 +995,7 @@ _patch_opts() {
             -)   P_STDOUT=1;    P_SHIFT=$((P_SHIFT + 1)); shift ;;
             -u)  P_UNTRACKED=1; P_SHIFT=$((P_SHIFT + 1)); shift ;;
             --)                 P_SHIFT=$((P_SHIFT + 1)); break ;;
-            -*)  _die "unknown option: $1 (destination comes from GIT_PATCH_DIR / patch.dir)" ;;
+            -*)  _die "unknown option: $1 (destination comes from AT_PATCH_DIR / at.patch.dir)" ;;
             *)   break ;;
         esac
     done
@@ -370,9 +1003,9 @@ _patch_opts() {
 
 # <base>/<repo>
 _patch_root() {
-    base=${GIT_PATCH_DIR:-}
+    base=$(_cfg at.patch.dir AT_PATCH_DIR)
     # --path so a "~/..." value in gitconfig is expanded rather than taken literally
-    [ -n "$base" ] || base=$(git config --path --get patch.dir) || base="$HOME/patches"
+    [ -n "$base" ] || base=$(git config --path --get at.patch.dir) || base="$HOME/patches"
     printf '%s/%s\n' "$base" "$(_repo_name)"
 }
 
@@ -421,13 +1054,13 @@ _emit() {
     printf '%s\n' "$dest"
 }
 
-# patch series from the merge-base, one file per commit (apply with `git am`)
-#   $1: base ref (defaults to the default branch)
+# patch series from the branch point, one file per commit (apply with `git am`)
+#   $1: base ref (defaults to the branch point)
 cmd_pf() {
     _patch_opts "$@"; shift $P_SHIFT
-    mb=$(_merge_base "${1:-}") || return 1
+    mb=$(_base_ref "${1:-}") || return 1
     n=$(git rev-list --count "$mb..HEAD")
-    [ "$n" -gt 0 ] || _die 'no commits since the merge-base'
+    [ "$n" -gt 0 ] || _die 'no commits since the branch point'
     if [ -n "$P_STDOUT" ]; then
         git format-patch --stdout "$mb..HEAD"
         return $?
@@ -439,20 +1072,20 @@ cmd_pf() {
     printf '%s\n' "$dir"
 }
 
-# flat patch of committed work from the merge-base
-#   $1: base ref (defaults to the default branch)
+# flat patch of committed work from the branch point
+#   $1: base ref (defaults to the branch point)
 cmd_pb() {
     _patch_opts "$@"; shift $P_SHIFT
-    mb=$(_merge_base "${1:-}") || return 1
+    mb=$(_base_ref "${1:-}") || return 1
     dest=$(_patch_file pb) || return 1
     _emit "$dest" git diff "$mb" HEAD
 }
 
-# flat patch of ALL work from the merge-base: committed + staged + unstaged
-#   $1: base ref (defaults to the default branch)
+# flat patch of ALL work from the branch point: committed + staged + unstaged
+#   $1: base ref (defaults to the branch point)
 cmd_pall() {
     _patch_opts "$@"; shift $P_SHIFT
-    mb=$(_merge_base "${1:-}") || return 1
+    mb=$(_base_ref "${1:-}") || return 1
     dest=$(_patch_file pall) || return 1
     _emit "$dest" _maybe_untracked git diff "$mb"
 }
@@ -464,7 +1097,9 @@ cmd_pw() {
     _emit "$dest" _maybe_untracked git diff HEAD
 }
 
-# ------------------------------------------------- patch inventory helpers ---
+# ------------------------------------------------------------- patches ----
+#
+# inventory
 
 _is_mailbox() { head -n1 "$1" 2>/dev/null | grep -q '^From [0-9a-f]\{7,\} '; }
 
@@ -508,7 +1143,9 @@ _patch_items_repo() {
     done
 }
 
-_count_lines() { [ -z "$1" ] && printf '0\n' || printf '%s\n' "$1" | wc -l | tr -d ' '; }
+_count_lines() {
+    if [ -z "$1" ]; then printf '0\n'; else printf '%s\n' "$1" | wc -l | tr -d ' '; fi
+}
 
 # path shown to the user: relative to <base>/<repo> when it lives there
 _patch_label() {
@@ -643,7 +1280,9 @@ _patch_rm() {
     printf 'deleted %s\n' "$(_count_lines "$1")"
 }
 
-# ----------------------------------------------------------------- apply ----
+# ------------------------------------------------------------- patches ----
+#
+# applying
 
 _apply_flat() {
     f=$1; label=$2
@@ -665,6 +1304,7 @@ _apply_flat() {
 
 _apply_series() {
     if [ "$APPLY_MODE" = reject ]; then
+        # shellcheck disable=SC2016  # backticks are prose here, not a command
         _warn 'note: `git am --reject` halts at the first already-applied commit (--3way skips them)'
         git am --reject "$@"
     else
@@ -730,8 +1370,9 @@ _apply() {
     fi
 }
 
-# apply a patch. with no argument, look at this repo + branch (then the rest of
-# the repo): exactly one candidate is applied, several are offered as a list.
+# apply a patch, choosing from this repo's patches when given none
+#   With no argument: this repo + branch first, then the rest of the repo. Exactly
+#   one candidate is applied; several are offered as a list.
 #   -r   use --reject instead of --3way
 #   $1   file, directory, or "-" for stdin
 cmd_p() {
@@ -767,120 +1408,240 @@ cmd_p() {
     _apply "$t" "$t"
 }
 
-# ------------------------------------------------------------------ jira ----
+# ----------------------------------------------------------- pull requests --
+#
+# The title comes from the branch name, so it costs no model call. The body is
+# assembled from git - ticket links, trailers, test plan - with the model writing
+# only the prose sections, exactly as far as it can be trusted.
 
-# get the linked jira ID (if any) from the current branch
-cmd_j() {
-    b=$(_cur 2>/dev/null) || return 0
-    id=${b%%.*}
-    printf '%s' "$id" | grep -Eq '^[A-Z]+-[0-9]+$' && printf '%s\n' "$id"
+# owner/repo for a remote
+_remote_repo() {
+    git remote get-url "$1" 2>/dev/null |
+        sed -E 's#/+$##; s#\.git$##; s#^.*[/:]([^/]+/[^/]+)$#\1#'
+}
+
+# does github see $1 as a fork of $2? A cross-repo PR needs that relationship,
+# and without it `gh pr create` fails late with a wall of GraphQL errors. When
+# `gh` cannot answer we do not stand in the way.
+#   $1: head repo (owner/name)   $2: base repo (owner/name)
+_is_fork_of() {
+    command -v gh >/dev/null 2>&1 || return 0
+    p=$(gh repo view "$1" --json parent -q '.parent.nameWithOwner // empty' 2>/dev/null) || return 0
+    [ -n "$p" ] || return 1
+    [ "$p" = "$2" ]
+}
+
+# the repo a PR is opened against: upstream, origin, gh's answer, the default
+# branch's remote, then whatever is listed first.
+_base_repo() {
+    head=$(_remote_repo origin 2>/dev/null) || head=''
+    if git remote get-url upstream >/dev/null 2>&1; then
+        up=$(_remote_repo upstream)
+        if [ -z "$head" ] || [ "$head" = "$up" ] || _is_fork_of "$head" "$up"; then
+            printf '%s\n' "$up"
+            return 0
+        fi
+        _warn "github does not see $head as a fork of $up, so a PR between them cannot be opened - using $head instead"
+    fi
+    [ -n "$head" ] && { printf '%s\n' "$head"; return 0; }
+    if command -v gh >/dev/null 2>&1; then
+        p=$(gh repo view --json parent,nameWithOwner \
+            -q '.parent.nameWithOwner // .nameWithOwner' 2>/dev/null) || p=''
+        [ -n "$p" ] && [ "$p" != null ] && { printf '%s\n' "$p"; return 0; }
+    fi
+    d=$(cmd_d)
+    r=$(git config --get "branch.$d.remote" 2>/dev/null) || r=''
+    [ -n "$r" ] || r=$(git remote | head -n1)
+    [ -n "$r" ] || return 1
+    _remote_repo "$r"
+}
+
+# the branch a PR targets: a recorded parent that exists on a remote, else the
+# default branch. remotes are consulted in the same order as the base repo.
+#   $1: branch
+_base_branch() {
+    d=$(cmd_d)
+    parent=$(git config --get "branch.$1.atparent" 2>/dev/null) || parent=''
+    [ -n "$parent" ] || { printf '%s\n' "$d"; return 0; }
+    for r in upstream origin $(git remote); do
+        git rev-parse --verify --quiet "refs/remotes/$r/$parent" >/dev/null 2>&1 &&
+            { printf '%s\n' "$parent"; return 0; }
+    done
+    printf '%s\n' "$d"
+}
+
+# a PR title from the branch name: dashes to spaces, Title Case, key in brackets
+#   $1: branch
+cmd__pr_title() {
+    b=${1:-$(_cur)}
+    key=$(cmd_i "$b")
+    rest=$(printf '%s' "$b" | sed -E 's/^[A-Za-z]+-[0-9]+[.-]?//')
+    words=$(printf '%s' "$rest" | tr '.-' '  ' |
+        awk '{for (i = 1; i <= NF; i++) $i = toupper(substr($i,1,1)) substr($i,2); print}')
+    if [ -n "$key" ]; then
+        printf '[%s] %s\n' "$key" "$words"
+    else
+        printf '%s\n' "$words"
+    fi
+}
+
+# where a ticket lives. an ignored key belongs to a tracker whose address only
+# `at.ticket.ignored-url` knows (a template taking the key); without one the key
+# is printed bare rather than linked somewhere wrong.
+_ticket_url() {
+    if _is_ignored_key "$1"; then
+        u=$(_cfg at.ticket.ignored-url AT_IGNORED_URL)
+        [ -n "$u" ] || return 1
+        # shellcheck disable=SC2059  # the template is the format, by design
+        printf "$u\n" "$1"
+        return 0
+    fi
+    w=$(_cfg at.linear.workspace AT_LINEAR_WORKSPACE)
+    [ -n "$w" ] || return 1
+    printf 'https://linear.app/%s/issue/%s\n' "$w" "$1"
+}
+
+# the PR body: git writes everything but the prose
+#
+# Its output is redirected rather than captured, so it runs in the caller's shell
+# and every name it sets is the caller's too - hence the prefixes. `base` here
+# once clobbered `_pr`'s, which sent a commit sha to `gh pr create --base`.
+#   $1: branch   $2: branch point   $3: non-empty to skip the model
+_pr_body() {
+    _prb_b=$1; _prb_base=$2; _prb_nosum=${3:-}
+    _prb_keys=$(git log --format='%(trailers:key=issue,valueonly)' "$_prb_base..HEAD" |
+        grep -oE '[A-Za-z]+-[0-9]+' | tr '[:lower:]' '[:upper:]' |
+        sort | uniq -c | sort -rn | awk '{print $2}')
+    [ -n "$_prb_keys" ] || _prb_keys=$(cmd_i "$_prb_b")
+    _prb_files=$(git diff --name-only "$_prb_base" HEAD | grep -c . || true)
+
+    # one attribution for the branch, taken from the commits that carry one, so
+    # the model that did the work is named rather than a stand-in
+    _prb_coauthor=''
+    for _prb_sha in $(git rev-list --reverse "$_prb_base..HEAD"); do
+        _prb_t=$(git show -s --format='%(trailers:key=Co-Authored-By,valueonly)' "$_prb_sha" | head -n1)
+        [ -n "$_prb_t" ] && { _prb_coauthor=$_prb_t; break; }
+    done
+
+    _prb_prose=''
+    if [ -z "$_prb_nosum" ]; then
+        _prb_prose=$({ cat "$(_rules pr)" 2>/dev/null
+                  printf '\n\n---\n\n## Commits on this branch\n\n'
+                  git log --reverse --format='%s' "$_prb_base..HEAD"
+                  printf '\n## Diffstat\n\n'
+                  git diff --stat "$_prb_base" HEAD
+                  printf '\n%s file(s) changed.\n' "$_prb_files"; } | _llm pr) || _prb_prose=''
+    fi
+
+    if [ -n "$_prb_keys" ]; then
+        _prb_links=''
+        for _prb_k in $_prb_keys; do
+            _prb_label=$_prb_k
+            _prb_u=$(_ticket_url "$_prb_k") && _prb_label="[$_prb_k]($_prb_u)"
+            _prb_links="${_prb_links}${_prb_links:+, }$_prb_label"
+        done
+        printf '**Ticket:** %s\n\n' "$_prb_links"
+    else
+        printf '**Ticket:** _none - say why_\n\n'
+    fi
+
+    if [ -n "$_prb_prose" ]; then
+        printf '%s\n\n' "$_prb_prose"
+    else
+        printf '## Why\n\n_todo._\n\n## What\n\n- _todo._\n\n### Blast radius\n\n_todo._\n\n'
+        [ "$_prb_files" -gt 1 ] &&
+            printf '## Reading guide\n\n| File | What to look at | Why |\n|---|---|---|\n| `` | … | … |\n\n'
+    fi
+
+    printf '## Test plan\n\n'
+    if [ -n "$_prb_keys" ]; then
+        printf 'see %s\n\n' "$(printf '%s\n' "$_prb_keys" | head -n1)"
+    else
+        printf '_no ticket._\n\n'
+    fi
+    printf '## Deploy notes\n\n_none._\n\n'
+
+    for _prb_k in $_prb_keys; do printf 'issue: %s\n' "$_prb_k"; done
+    [ -n "$_prb_coauthor" ] && printf 'Co-Authored-By: %s\n' "$_prb_coauthor"
     return 0
 }
 
-_jira_key() {
-    case "$1" in
-        *-*) printf '%s\n' "$1" ;;
-        *)   printf '%s-%s\n' "${J_TASKPREFIX:-$(git config --get jira.taskprefix || echo MAD)}" "$1" ;;
-    esac
+# the body this branch would get (internal)
+#   $1: non-empty to skip the model
+cmd__pr_body() {
+    b=$(_cur) || _die 'detached HEAD'
+    bp=$(_branch_point "$b") || return 1
+    _pr_body "$b" "${bp##* }" "${1:-}"
 }
-_ktransition() { printf '%s\n' "${JK_TRANSITION:-$(git config --get jira.ktransition)}"; }
-_rtransition() { printf '%s\n' "${JR_TRANSITION:-$(git config --get jira.rtransition)}"; }
 
-_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+# open a PR
+#   $1: --draft or ""   rest: parsed flags and arguments
+_pr() {
+    draft=$1; shift
+    edit=1; nosum=''; base=''; title=''; body=''; repo=''
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -y)            edit=''; shift ;;
+            --no-summary)  nosum=1; shift ;;
+            --base)        base=${2:-}; shift 2 ;;
+            --)            shift; break ;;
+            -*)            _die "unknown option: $1" ;;
+            *)             break ;;
+        esac
+    done
+    title=${1:-}; body=${2:-}; repo=${3:-}
 
-# current status name of a work item, or empty.
-#   $1: work item key
-_jira_status() {
-    out=$(acli jira workitem view "$1" --fields status --json 2>/dev/null) || return 1
-    if command -v jq >/dev/null 2>&1; then
-        printf '%s' "$out" | jq -r '[.. | objects | select(has("name")) | .name] | first // empty' 2>/dev/null && return 0
+    _require_github
+    b=$(_cur) || _die 'detached HEAD'
+    bp=$(_branch_point "$b") || return 1
+    point=${bp##* }
+    [ -n "$title" ] || title=$(cmd__pr_title "$b")
+    [ -n "$base" ]  || base=$(_base_branch "$b")
+    [ -n "$repo" ]  || repo=$(_base_repo) || repo=''
+
+    f=$(mktemp "${TMPDIR:-/tmp}/git-at-pr.XXXXXX") || return 1
+    if [ -n "$body" ]; then
+        printf '%s\n' "$body" >"$f"
+    else
+        _pr_body "$b" "$point" "$nosum" >"$f" || { rm -f "$f"; return 1; }
     fi
-    # no jq: we asked for one field, so the first "name" in the payload is it
-    printf '%s' "$out" |
-        grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' |
-        head -n1 |
-        sed 's/.*"\([^"]*\)"$/\1/'
-}
+    if [ -n "$edit" ]; then
+        ed=$(git var GIT_EDITOR 2>/dev/null) || ed=''
+        [ -n "$ed" ] && { sh -c "$ed \"\$1\"" _ "$f" || { rm -f "$f"; return 1; }; }
+    fi
 
-# jira transition (requires acli; current branch must be linked to jira)
-#   $1: state to transition to
-cmd_jt() {
-    _need acli
-    id=$(cmd_j)
-    [ -n "$id" ] || _die 'current branch is not linked to a jira task'
-    [ -n "${1:-}" ] || _die 'usage: git jt <status>'
-
-    out=$(acli jira workitem transition --key "$id" --status "$1" --yes 2>&1)
+    printf 'opening a PR against %s on %s\n' "$base" "${repo:-origin}" >&2
+    if ! git push -u origin HEAD; then
+        rm -f "$f"
+        # git's own hint says to pull, which would merge the old history back in
+        _is_ancestor "origin/$b" "$b" ||
+            _warn "'$b' was rewritten since it was last pushed - push it with \`git oof\` first (do not pull)"
+        return 1
+    fi
+    set -- --title "$title" --body-file "$f" --base "$base"
+    [ -n "$draft" ] && set -- "$@" "$draft"
+    [ -n "$repo" ] && set -- "$@" --repo "$repo"
+    gh pr create "$@"
     rc=$?
-    if [ $rc -eq 0 ]; then
-        [ -n "$out" ] && printf '%s\n' "$out"
-        return 0
-    fi
-
-    if [ "$(_lower "$(_jira_status "$id")")" = "$(_lower "$1")" ]; then
-        return 0    # already in the target status: silent success
-    fi
-
-    printf '%s\n' "$out" >&2
+    rm -f "$f"
     return $rc
 }
 
-# new checkout from a jira task
-#   $1: jira task id   $2: new branch name
-cmd_jk() {
-    id=$(_jira_key "$1")
-    cmd_dk "$id.$2" && cmd_jt "$(_ktransition)"
-}
-
-# `duk` with jira transition
-#   $1: jira task id   $2: new branch name
-cmd_jduk() {
-    id=$(_jira_key "$1")
-    cmd_duk "$id.$2" && cmd_jt "$(_ktransition)"
-}
-
-# `r` with jira transition
-cmd_jr()   { cmd_r   "$@" && cmd_jt "$(_rtransition)"; }
-# `rr` with jira transition
-cmd_jrr()  { cmd_rr  "$@" && cmd_jt "$(_rtransition)"; }
-# `urr` with jira transition
-cmd_jurr() { cmd_urr "$@" && cmd_jt "$(_ktransition)"; }
-
-# ----------------------------------------------------------- pull requests --
-
-# internal: open a PR
-#   $1: extra gh flag ("" or --draft)
-#   $2: title
-#   $3: body
-#   $4: base repo
-_pr() {
-    extra=${1:-}; title=${2:-}; body=${3:-}; repo=${4:-}
-    _require_github
-    gh repo set-default --view >/dev/null 2>&1 || {
-        u=$(git remote get-url upstream 2>/dev/null) || u=''
-        [ -n "$u" ] && gh repo set-default \
-            "$(printf '%s' "$u" | sed -E 's#/+$##; s#\.git$##; s#^.*[/:]([^/]+/[^/]+)$#\1#')" >/dev/null 2>&1
-    }
-    git push -u origin HEAD || return 1
-    [ -n "$title" ] || title=$(_cur 2>/dev/null) || title=''
-    set -- --title "$title" --body "$body"
-    [ -n "$extra" ] && set -- "$@" "$extra"
-    [ -n "$repo" ]  && set -- "$@" --repo "$repo"
-    gh pr create "$@"
-}
-
 # open a pull request
-#   $1: title (defaults to branch name)
-#   $2: body
-#   $3: base repo OWNER/REPO
-cmd_r()  { _pr '' "${1:-}" "${2:-}" "${3:-}"; }
+#   -y: do not open the body in the editor first
+#   --no-summary: assemble the body without a model call
+#   --base <branch>: target this branch rather than the parent or default branch
+#   $1: title (defaults to one built from the branch name)   $2: body   $3: OWNER/REPO
+cmd_r() { _pr '' "$@" && _ticket_move r; }
+
 # `r` but as a draft
-cmd_rd() { _pr '--draft' "${1:-}" "${2:-}" "${3:-}"; }
+cmd_rd() { _pr '--draft' "$@" && _ticket_move rd; }
 
 # move an open draft pull request to ready
-cmd_rr()  { _require_github; gh pr ready "$@"; }
+cmd_rr() { _require_github; gh pr ready "$@" && _ticket_move rr; }
+
 # convert an open pull request to draft
-cmd_urr() { _require_github; gh pr ready --undo "$@"; }
+cmd_urr() { _require_github; gh pr ready --undo "$@" && _ticket_move urr; }
 
 # ---------------------------------------------------------------- remotes ---
 
@@ -889,8 +1650,8 @@ cmd_urr() { _require_github; gh pr ready --undo "$@"; }
 #   $2: repo (defaults to origin repo)
 #   $3: local name (defaults to $1)
 #   $4: host (defaults to origin host)
-cmd_radd() {
-    [ -n "${1:-}" ] || _die 'usage: git radd <owner> [repo] [remote] [host]'
+cmd_madd() {
+    [ -n "${1:-}" ] || _die 'usage: git madd <owner> [repo] [remote] [host]'
     o=$(git remote get-url origin)
     repo=${2:-$(cmd_or)}
     name=${3:-$1}
@@ -901,103 +1662,157 @@ cmd_radd() {
 }
 
 # ------------------------------------------------------------------- help ---
+#
+# Generated from the comment above each command, so help and code cannot drift:
+# the first line of the block is the summary, the indented lines are the detail.
 
-cmd_h() {
-    cat <<'EOF'
-  o    : push to origin
-  op   : push to origin
-  oof  : force push to origin
-  up   : push to upstream
-  uff  : force push to upstream
-  b    : [$scope] : list local branches (use `br` for remotes)
-  bi   : [$scope] : `b` with fancy info
-  br   : [$remote] : list remote branches
-  bri  : [$remote] : `br` with fancy info
-  bd   : [-y] : delete local branches which have been merged
-  bdf  : [$branch], [-y] : force-delete branch(es), merged or not
-  bg   : $pattern : grep local branch names (use `bgr` for remotes)
-  bgi  : $pattern : `bg` with fancy info (info WILL be grepped)
-  bgr  : $pattern, [$remote] : grep remote branch names
-  bgri : $pattern, [$remote] : `bgr` with fancy info (info WILL be grepped)
-  bk   : [$pattern] : check out first match (none = default branch)
-  bkr  : $pattern, [$remote] : check out and track first remote match
-  bkd  : checkout the default branch (same as bare `bk`)
-  c    : [$commit-args] : commit; adds jira trailer, amends `working`
-  ceg  : edit global config
-  d    : discover the default branch name
-  dk   : $branch : branch from default branch
-  dr   : rebase the current branch on the default branch
-  ds   : sync default branch; from upstream if a fork
-  duk  : $branch : `uk` and rebase on default branch
-  f5   : quicksave
-  fb   : [$ref] : diff from merge base (no $ref = default branch)
-  fc   : diff from last commit
-  fd   : diff from default branch (sync'd)
-  fk   : diff from default branch (no sync)
-  fs   : staged diff
-  fu   : unstaged diff
-  j    : the linked jira ID (if any) of the current branch
-  jduk : $task, $branch : `duk` with jira transition
-  jk   : $task, $branch : new checkout from a jira task
-  jr   : [$title], [$body], [$repo] : `r` with jira transition
-  jrr  : `rr` with jira transition
-  jt   : $status : jira transition (needs acli; already there = no-op)
-  jurr : `urr` with jira transition
-  lg   : log graph
-  ll   : latest log message & status
-  oh   : discover the host from origin
-  oor  : discover the owner/repo from origin
-  or   : discover the repo name from origin
-  p    : [-r], [$file|$dir|-] : apply a patch (no argument: pick from repo/branch)
-  pall : [-], [-u], [$ref] : patch of ALL work from merge-base (committed + not)
-  pb   : [-], [-u], [$ref] : patch of committed work from merge-base
-  pd   : [-a], [-y], [-n] : delete patches; drops ones applied here, else asks
-  pf   : [-], [-u], [$ref] : patch series from merge-base, one file per commit
-  pl   : [-a] : list available patches
-  pw   : [-], [-u] : patch of uncommitted work only
-  r    : [$title], [$body], [$repo] : open a pull request
-  radd : $owner, [$repo], [$as], [$host] : add a new remote
-  rd   : [$title], [$body], [$repo] : `r` but as a draft
-  rr   : move a draft pull request to ready
-  s    : status
-  t    : $tag, [$message] : create a tag
-  u    : update (stage tracked changes)
-  all  : update all (stage everything)
-  um   : [-u|--all], [$commit-args] : amend last commit
-  uk   : $branch : branch from current branch (and quicksave)
-  urr  : convert an open pull request to draft
+# the alias file that ships beside the script
+_aliases_file() { printf '%s\n' "$(dirname "$0")/at-aliases.gitconfig"; }
 
-  flags:  -   write to stdout instead of a file     (pf, pb, pall, pw)
-          -u  include untracked files               (pf, pb, pall, pw)
-          -r  use --reject instead of --3way        (p)
-          -a  the whole repo, not just this branch  (pl, pd)
-          -y  skip the confirmation                 (bd, bdf, pd)
-          -n  dry run                               (pd)
+# families left out of the index: `diffs` and `patches` are rarely reached for,
+# and `discovery` is machinery the other commands call rather than something to
+# run by hand. `git h <family>` prints any of them. Checked by `_sync-help`.
+_UNLISTED='diffs discovery patches'
 
-  patches are written to $GIT_PATCH_DIR | `git config patch.dir` | ~/patches
-                    then /<repo>/<branch>/<command name>  (stable, overwritten)
-EOF
+# individual commands left out of the index: `o` is a second spelling of `op`,
+# and anyone reading this list found `h` without its help.
+_UNLISTED_CMDS='h o'
+
+_help_all() { _help_index; _help_aliases; }
+
+# "<family>\t<name>\t<summary>" for every command that has a comment block.
+# The family is the section the function lives in, so commands that do similar
+# things are grouped by where they already sit in this file.
+_help_index() {
+    awk '
+        /^# -+ .* -+$/ {
+            family = $0
+            sub(/^# -+[[:space:]]*/, "", family)
+            sub(/[[:space:]]*-+$/, "", family)
+            next
+        }
+        /^# / { if (!block) { summary = substr($0, 3); block = 1 } next }
+        /^#/  { next }
+        /^cmd_[a-z0-9][a-z0-9_]*\(\)/ {
+            name = $0
+            sub(/\(\).*/, "", name)
+            sub(/^cmd_/, "", name)
+            gsub(/_/, "-", name)
+            if (block) printf "%s\t%s\t%s\n", family, name, summary
+            block = 0; summary = ""
+            next
+        }
+        { block = 0; summary = "" }
+    ' "$0"
 }
 
-# cross-check: every cmd_* has a help line and vice versa (catches drift).
+# "<family>\t<name>\t<expansion>" for the aliases that are plain git rather than
+# git-at commands. What they expand to is their documentation, and the `# --- x ---`
+# markers in that file are their families.
+_help_aliases() {
+    f=$(_aliases_file)
+    [ -f "$f" ] || return 0
+    awk -F'=' '
+        /^[[:space:]]*#[[:space:]]*-+ .* -+/ {
+            family = $0
+            sub(/^[^a-z]*/, "", family)
+            sub(/[[:space:]]*-+[[:space:]]*$/, "", family)
+            next
+        }
+        /^[[:space:]]*[a-z0-9]+[[:space:]]*=[[:space:]]*[^"![:space:]]/ {
+            name = $1; gsub(/[[:space:]]/, "", name)
+            value = substr($0, index($0, "=") + 1)
+            sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value)
+            printf "%s\tgit %s\n", family "\t" name, value
+        }
+    ' "$f"
+}
+
+# the whole comment block for one command, or what a plain-git alias expands to
+_help_one() {
+    fn="cmd_$(printf '%s' "$1" | tr '-' '_')"
+    awk -v fn="$fn" '
+        /^# / { if (!block) { block = 1; n = 0 } lines[++n] = substr($0, 3); next }
+        /^#/  { next }
+        $0 ~ "^" fn "\\(\\)" {
+            for (i = 1; i <= n; i++) print "  " lines[i]
+            found = 1; exit
+        }
+        { block = 0; n = 0 }
+        END { if (!found) exit 1 }
+    ' "$0" && return 0
+
+    line=$(_help_aliases | cut -f2- | grep "^$1	") ||
+        _die "no such command: $1 (try \`git h\`)"
+    printf '  %s\n' "${line#*	}"
+}
+
+# print one family's commands; non-zero when no family goes by that name
+_help_family() {
+    _help_all | sort -t"$(printf '\t')" -k2 | awk -F'\t' -v want="$1" '
+        $1 == want { printf "  %-5s: %s\n", $2, $3; found = 1 }
+        END { exit !found }'
+}
+
+# command reference
+#   $1: a command, for its full description, or a family, for its commands
+#       (`git h diffs`, `git h patches`, `git h discovery`)
+cmd_h() {
+    if [ -n "${1:-}" ]; then
+        _help_family "$1" && return 0
+        _help_one "$1"
+        return $?
+    fi
+    # grouped by what commands do - the section they live in - with the groups and
+    # their members in alphabetical order, so a name is still found by scanning
+    tab=$(printf '\t')
+    _help_all | sort -t"$tab" -k2 | awk -F'\t' -v skip=" $_UNLISTED " -v skipcmd=" $_UNLISTED_CMDS " '
+        index(skip, " " $1 " ") { next }
+        index(skipcmd, " " $2 " ") { next }
+        { if (!($1 in seen)) { seen[$1] = ++groups }
+          g = seen[$1]
+          body[g] = body[g] sprintf("  %-5s: %s\n", $2, $3) }
+        END { for (i = 1; i <= groups; i++) printf "%s%s", (i > 1 ? "\n" : ""), body[i] }'
+    more=''
+    for f in $_UNLISTED; do more="${more}${more:+, }git h $f"; done
+    printf '\n  more:   %s\n' "$more"
+    printf '  detail: git h <command>\n'
+}
+
+# cross-check that help, code and the alias file agree (catches drift)
 cmd__sync_help() {
-    self=$0
-    defined=$(sed -n 's/^cmd_\([a-z0-9][a-z0-9_]*\)().*/\1/p' "$self" | tr '_' '-' |
-        grep -vx 'h' | sort)
-    # command lines are "  <name, <=4 chars> : ..."; prose starts with a longer word
-    documented=$(cmd_h | sed -n 's/^  \([a-z0-9]\{1,4\}\) *: .*/\1/p' | sort)
-    # aliases that are pure git commands live in gitconfig, not here
-    passthrough='o op oof up uff ceg fc fs fu lg ll'
+    aliases=$(_aliases_file)
+    defined=$(sed -n 's/^cmd_\([a-z0-9][a-z0-9_]*\)().*/\1/p' "$0" | tr '_' '-' | sort)
+    described=$(_help_index | cut -f2 | sort)
     rc=0
-    for n in $documented; do
-        case " $passthrough " in *" $n "*) continue ;; esac
-        printf '%s\n' "$defined" | grep -qx "$n" ||
-            { printf 'documented but not implemented: %s\n' "$n"; rc=1; }
-    done
+
     for n in $defined; do
-        printf '%s\n' "$documented" | grep -qx "$n" ||
-            { printf 'implemented but not documented: %s\n' "$n"; rc=1; }
+        printf '%s\n' "$described" | grep -qx "$n" ||
+            { printf 'no summary comment: %s\n' "$n"; rc=1; }
+        [ -f "$aliases" ] || continue
+        grep -qE "^[[:space:]]*${n}[[:space:]]*=" "$aliases" ||
+            { printf 'no alias in at-aliases.gitconfig: %s\n' "$n"; rc=1; }
     done
+
+    if [ -f "$aliases" ]; then
+        pure=$(_help_aliases | cut -f2 | tr '\n' ' ')
+        sed -n 's/^[[:space:]]*\([a-z0-9]\{1,5\}\)[[:space:]]*=.*/\1/p' "$aliases" | sort -u |
+        while read -r n; do
+            case " $pure " in *" $n "*) continue ;; esac
+            printf '%s\n' "$defined" | grep -qx "$n" ||
+                printf 'alias with no command: %s\n' "$n"
+        done | grep . && rc=1
+    fi
+
+    for f in $_UNLISTED; do
+        _help_family "$f" >/dev/null ||
+            { printf 'unlisted family with no commands: %s\n' "$f"; rc=1; }
+    done
+    for n in $_UNLISTED_CMDS; do
+        _help_all | cut -f2 | grep -qx "$n" ||
+            { printf 'unlisted command that does not exist: %s\n' "$n"; rc=1; }
+    done
+
     [ $rc -eq 0 ] && printf 'ok\n'
     return $rc
 }
