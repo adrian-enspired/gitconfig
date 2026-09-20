@@ -37,6 +37,8 @@ git -C "$AT_TMP/ff-seed" push -q "$AT_TMP/ff-upstream.git" master
 
 at_out ff ds >/dev/null
 is "$AT_RC" '0' 'an ordinary sync succeeds'
+contains "$AT_OUT" 'origin/master:' 'it says what happened to origin'
+contains "$AT_OUT" 'master:' 'and what happened locally'
 git -C "$AT_TMP/ff" fetch -q --all
 is "$(git -C "$AT_TMP/ff" rev-parse origin/master)" \
    "$(git -C "$AT_TMP/ff" rev-parse upstream/master)" 'origin is brought up to upstream'
@@ -77,6 +79,7 @@ git -C "$AT_TMP/solo-seed" push -q "$AT_TMP/solo-origin.git" master
 
 at_out solo ds >/dev/null
 is "$AT_RC" '0' 'a repo with no upstream just pulls from origin'
+contains "$AT_OUT" ' -> ' 'and reports the move'
 is "$(git -C "$AT_TMP/solo" rev-parse master)" \
    "$(git -C "$AT_TMP/solo" rev-parse origin/master)" 'and is up to date with origin'
 
@@ -86,5 +89,19 @@ new_repo alone >/dev/null
 at_out alone ds >/dev/null
 is "$AT_RC" '0' 'no origin is not an error'
 contains "$AT_OUT" 'no origin' 'it just says so'
+
+# ------------------------------------------------- nothing left to do ---
+
+# the case that used to print nothing at all, which is indistinguishable from
+# a command that silently did nothing
+at_out ff ds >/dev/null
+is "$AT_RC" '0' 'a second sync succeeds'
+contains "$AT_OUT" 'already' 'and says there was nothing to do'
+
+# a broken upstream is reported, not swallowed
+fork broken
+git -C "$AT_TMP/broken" remote set-url upstream "$AT_TMP/does-not-exist.git"
+at_out broken ds >/dev/null
+contains "$AT_OUT" 'failed' 'a fetch that fails says so'
 
 t_done

@@ -41,7 +41,9 @@ for f in $files; do
     printf '# %s\n' "$name"
     AT_TMP="$tmp/${name%.t}"; export AT_TMP
     mkdir -p "$AT_TMP"
-    sh "$f" || rc=1
+    # never let a test block on a confirmation prompt: stdin is closed, so
+    # `read` returns immediately and the command takes its default
+    sh "$f" </dev/null || rc=1
 done
 
 # `h` is generated from the comments in the script, so drift is a test failure.

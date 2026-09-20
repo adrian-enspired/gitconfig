@@ -818,6 +818,9 @@ _sync_fork() {
 }
 
 # sync the default branch: from upstream first when the repo is a fork
+#
+# Reports every step. A sync that prints nothing on success leaves you guessing
+# whether it did anything, and swallowed stderr leaves you guessing why not.
 #   -y: overwrite a diverged origin, and reset a diverged local branch, unasked
 cmd_ds() {
     yes=''
@@ -830,8 +833,10 @@ cmd_ds() {
 
     # an `upstream` remote means the repo is a fork, so origin is sync'd from it
     if git remote get-url upstream >/dev/null 2>&1; then
-        git fetch -q origin --prune 2>/dev/null
-        git fetch -q upstream --prune 2>/dev/null
+        for r in origin upstream; do
+            git fetch -q "$r" --prune ||
+                _warn "fetch from '$r' failed - working from what is already here"
+        done
         # origin's default branch is meant to be strictly downstream of upstream.
         # anything on it that upstream lacks is about to be thrown away, and a
         # forced sync is not the place to find that out afterwards.
@@ -841,20 +846,44 @@ cmd_ds() {
             git log --oneline "refs/remotes/upstream/$d..refs/remotes/origin/$d" >&2
             _confirm "overwrite origin/$d from upstream/$d? [y/N] " || return 1
         fi
-        _sync_fork "$d" >/dev/null 2>&1 ||
-            _warn 'warning: upstream sync failed - continuing with origin only'
-        git fetch -q origin --prune 2>/dev/null
+        was=$(git rev-parse --short "refs/remotes/origin/$d" 2>/dev/null) || was='?'
+        if out=$(_sync_fork "$d" 2>&1); then
+            git fetch -q origin --prune || true
+            now=$(git rev-parse --short "refs/remotes/origin/$d" 2>/dev/null) || now='?'
+            if [ "$was" = "$now" ]; then
+                printf 'origin/%s: already level with upstream (%s)\n' "$d" "$now"
+            else
+                printf 'origin/%s: %s -> %s, from upstream\n' "$d" "$was" "$now"
+            fi
+        else
+            _warn "syncing origin/$d from upstream failed - carrying on with origin as it is:"
+            printf '%s\n' "$out" | sed 's/^/  /' >&2
+        fi
+    else
+        git fetch -q origin --prune ||
+            _warn "fetch from 'origin' failed - working from what is already here"
     fi
 
-    git switch -q "$d" || return 1
+    git switch -q "$d" || _die "cannot switch to $d - commit or stash first"
+    before=$(git rev-parse --short "$d")
     # --ff-only is authoritative here regardless of pull.rebase: a diverged local
     # default branch is a thing to look at, not to silently rebase away
-    git pull -q --ff-only origin "$d" 2>/dev/null && return 0
+    if git merge-base --is-ancestor "$d" "refs/remotes/origin/$d" 2>/dev/null; then
+        git merge -q --ff-only "refs/remotes/origin/$d" || return 1
+        after=$(git rev-parse --short "$d")
+        if [ "$before" = "$after" ]; then
+            printf '%s: already up to date (%s)\n' "$d" "$after"
+        else
+            printf '%s: %s -> %s\n' "$d" "$before" "$after"
+        fi
+        return 0
+    fi
 
     _warn "local $d has diverged from origin/$d:"
     git log --oneline "refs/remotes/origin/$d..$d" >&2
     [ -n "$yes" ] || _confirm "reset $d to origin/$d? [y/N] " || return 1
     git reset -q --hard "refs/remotes/origin/$d"
+    printf '%s: reset to %s\n' "$d" "$(git rev-parse --short "$d")"
 }
 
 # what this branch should be rebased onto: its parent while the parent is open,
@@ -1426,7 +1455,10 @@ _remote_repo() {
 #   $1: head repo (owner/name)   $2: base repo (owner/name)
 _is_fork_of() {
     command -v gh >/dev/null 2>&1 || return 0
-    p=$(gh repo view "$1" --json parent -q '.parent.nameWithOwner // empty' 2>/dev/null) || return 0
+    # `parent` carries `name` and `owner.login`; it has no `nameWithOwner`, and
+    # asking for one returns empty - which reads as "not a fork" for every fork
+    p=$(gh repo view "$1" --json parent \
+        -q '.parent | select(. != null) | .owner.login + "/" + .name' 2>/dev/null) || return 0
     [ -n "$p" ] || return 1
     [ "$p" = "$2" ]
 }
@@ -1441,12 +1473,14 @@ _base_repo() {
             printf '%s\n' "$up"
             return 0
         fi
-        _warn "github does not see $head as a fork of $up, so a PR between them cannot be opened - using $head instead"
+        # opening it somewhere else instead would put a PR in a repo nobody asked
+        # for, so say what is wrong and let the caller decide
+        _die "github does not see $head as a fork of $up, so a PR between them cannot be opened - check the fork, or name the repo yourself: \`git r --repo $head\`"
     fi
     [ -n "$head" ] && { printf '%s\n' "$head"; return 0; }
     if command -v gh >/dev/null 2>&1; then
         p=$(gh repo view --json parent,nameWithOwner \
-            -q '.parent.nameWithOwner // .nameWithOwner' 2>/dev/null) || p=''
+            -q '(.parent | select(. != null) | .owner.login + "/" + .name) // .nameWithOwner' 2>/dev/null) || p=''
         [ -n "$p" ] && [ "$p" != null ] && { printf '%s\n' "$p"; return 0; }
     fi
     d=$(cmd_d)
@@ -1584,12 +1618,13 @@ _pr() {
             -y)            edit=''; shift ;;
             --no-summary)  nosum=1; shift ;;
             --base)        base=${2:-}; shift 2 ;;
+            --repo)        repo=${2:-}; shift 2 ;;
             --)            shift; break ;;
             -*)            _die "unknown option: $1" ;;
             *)             break ;;
         esac
     done
-    title=${1:-}; body=${2:-}; repo=${3:-}
+    title=${1:-}; body=${2:-}; repo=${repo:-${3:-}}
 
     _require_github
     b=$(_cur) || _die 'detached HEAD'
@@ -1597,7 +1632,9 @@ _pr() {
     point=${bp##* }
     [ -n "$title" ] || title=$(cmd__pr_title "$b")
     [ -n "$base" ]  || base=$(_base_branch "$b")
-    [ -n "$repo" ]  || repo=$(_base_repo) || repo=''
+    # `_die` inside a command substitution only ends the subshell, so its exit
+    # status is the whole signal: swallowing it would carry on past a refusal
+    [ -n "$repo" ]  || repo=$(_base_repo) || return 1
 
     f=$(mktemp "${TMPDIR:-/tmp}/git-at-pr.XXXXXX") || return 1
     if [ -n "$body" ]; then
@@ -1631,6 +1668,7 @@ _pr() {
 #   -y: do not open the body in the editor first
 #   --no-summary: assemble the body without a model call
 #   --base <branch>: target this branch rather than the parent or default branch
+#   --repo <owner/repo>: open it in this repo rather than the one worked out
 #   $1: title (defaults to one built from the branch name)   $2: body   $3: OWNER/REPO
 cmd_r() { _pr '' "$@" && _ticket_move r; }
 

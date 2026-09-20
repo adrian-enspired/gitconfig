@@ -88,9 +88,20 @@ git -C "$AT_TMP/pr" switch -q COM-5.add-listing
 printf '' >"$AT_TMP/fork-parent"          # github: origin is nobody's fork
 rm -f "$AT_TMP/gh-args"
 AT_OUT=$( (cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary) 2>&1 )
-create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
-contains "$create" '--repo nx-adrian/gitconfig' 'an unrelated upstream falls back to origin'
+rc=$?
+is "$rc" '1' 'an unrelated upstream stops, rather than retargeting'
 contains "$AT_OUT" 'does not see' 'and says why'
+contains "$AT_OUT" '--repo' 'and how to override it'
+case "$(cat "$AT_TMP/gh-args" 2>/dev/null)" in
+    *'pr create'*) not_ok 'no PR is opened somewhere nobody asked for' ;;
+    *)             ok 'no PR is opened somewhere nobody asked for' ;;
+esac
+
+# --repo is that override
+rm -f "$AT_TMP/gh-args"
+(cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary --repo nx-adrian/gitconfig) >/dev/null 2>&1
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--repo nx-adrian/gitconfig' '--repo names the repo outright'
 
 # github confirming the fork: upstream is the right target again
 printf 'someone-else/gitconfig\n' >"$AT_TMP/fork-parent"
