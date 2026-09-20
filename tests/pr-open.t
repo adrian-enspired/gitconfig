@@ -63,6 +63,21 @@ rm -f "$AT_TMP/gh-args"
 create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
 contains "$create" '--base master' 'an explicit --base wins'
 
+# ------------------------------------------- a branch rewritten since pushing ---
+
+# after a rebase the remote branch is no longer an ancestor, so the push is
+# refused - and git's own hint (pull) would merge the old history back in
+git -C "$AT_TMP/pr" switch -q COM-5.add-listing
+git -C "$AT_TMP/pr" push -q origin COM-5.add-listing 2>/dev/null
+git -C "$AT_TMP/pr" commit -q --amend -m 'feat(stripe): add the listing, reworded'
+
+AT_OUT=$( (cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary) 2>&1 )
+rc=$?
+is "$rc" '1' 'a rejected push stops the PR'
+contains "$AT_OUT" 'git oof' 'and points at the force push, not a pull'
+
+git -C "$AT_TMP/pr" push -q --force origin COM-5.add-listing 2>/dev/null
+
 # ------------------------------------------------- an upstream that is not ours ---
 
 # two repos that share history locally but are unrelated on github: a PR between

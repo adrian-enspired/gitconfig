@@ -1592,7 +1592,13 @@ _pr() {
     fi
 
     printf 'opening a PR against %s on %s\n' "$base" "${repo:-origin}" >&2
-    git push -u origin HEAD || { rm -f "$f"; return 1; }
+    if ! git push -u origin HEAD; then
+        rm -f "$f"
+        # git's own hint says to pull, which would merge the old history back in
+        _is_ancestor "origin/$b" "$b" ||
+            _warn "'$b' was rewritten since it was last pushed - push it with \`git oof\` first (do not pull)"
+        return 1
+    fi
     set -- --title "$title" --body-file "$f" --base "$base"
     [ -n "$draft" ] && set -- "$@" "$draft"
     [ -n "$repo" ] && set -- "$@" --repo "$repo"
