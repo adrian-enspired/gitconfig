@@ -45,12 +45,24 @@ body=$(at b _pr-body skip)
 contains "$body" '## Why' 'a skipped model still leaves the headings'
 contains "$body" '_todo._' 'stubbed out for the author to fill in'
 
-# a legacy key links to jira, not linear
+# an ignored key links wherever its own tracker lives, if that is configured
 new_repo lg >/dev/null
 git -C "$AT_TMP/lg" switch -q -c MAD-16743.stripe-list
-write_commit lg one 'one' 'feat(stripe): legacy ticket'
+write_commit lg one 'one' 'feat(stripe): a key from another tracker'
+git -C "$AT_TMP/lg" config at.ticket.ignored-prefixes 'MAD-'
+git -C "$AT_TMP/lg" config at.ticket.ignored-url 'https://example.atlassian.net/browse/%s'
+git -C "$AT_TMP/lg" config at.linear.workspace nexcess
 body=$(at lg _pr-body skip)
-contains "$body" 'liquidweb.atlassian.net/browse/MAD-16743' 'a legacy key links to jira'
+contains "$body" 'example.atlassian.net/browse/MAD-16743' 'an ignored key links to its own tracker'
+case $body in
+    *linear.app*) not_ok 'and never to linear' ;;
+    *)            ok 'and never to linear' ;;
+esac
+
+# with no url configured it is named but not linked somewhere wrong
+git -C "$AT_TMP/lg" config --unset at.ticket.ignored-url
+body=$(at lg _pr-body skip)
+contains "$body" '**Ticket:** MAD-16743' 'without a url the key is bare'
 
 # keys come from the commit trailers, most-referenced first
 new_repo tr >/dev/null

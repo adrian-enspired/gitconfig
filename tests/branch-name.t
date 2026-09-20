@@ -67,13 +67,35 @@ git -C "$AT_TMP/names" config --unset at.llm.command
 is "$(PATH="$AT_TMP/bin:$PATH" at names _branch-name COM-78 2>/dev/null)" \
     'COM-78.allow-admins-to-schedule' 'without a model the first four words are kept'
 
-# ------------------------------------------------------- legacy keys ---
+# --------------------------------------------------- ignored prefixes ---
+
+# nothing is ignored until the config says so: an unconfigured MAD- key is just
+# another key, looked up like any other
+cat >"$AT_TMP/bin/curl" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"data":{"issue":{"identifier":"MAD-16743","title":"Stripe list"}}}\n'
+EOF
+is "$(PATH="$AT_TMP/bin:$PATH" at names _branch-name MAD-16743)" 'MAD-16743.stripe-list' \
+    'an unconfigured prefix is looked up like any other'
+
+git -C "$AT_TMP/names" config at.ticket.ignored-prefixes 'MAD- MADRR- NXERR-'
 
 at_out names _branch-name MAD-16743 >/dev/null
-is "$AT_RC" '1' 'a legacy key cannot have its title fetched'
+is "$AT_RC" '1' 'an ignored key is never looked up'
 contains "$AT_OUT" 'MAD-16743' 'and it asks for a slug by name'
 
 is "$(at names _branch-name MAD-16743 stripe-list)" 'MAD-16743.stripe-list' \
-    'a legacy key with a slug is fine'
+    'an ignored key with a slug is fine'
+
+# the separators and the trailing dash are both optional, and case does not matter
+git -C "$AT_TMP/names" config at.ticket.ignored-prefixes 'mad,nxerr'
+at_out names _branch-name MAD-16743 >/dev/null
+is "$AT_RC" '1' 'commas, no dash and lowercase all work'
+
+# a prefix that is not listed is still linear's
+git -C "$AT_TMP/names" config at.ticket.ignored-prefixes 'OLD-'
+is "$(PATH="$AT_TMP/bin:$PATH" at names _branch-name MAD-16743)" 'MAD-16743.stripe-list' \
+    'an unlisted prefix is unaffected'
 
 t_done

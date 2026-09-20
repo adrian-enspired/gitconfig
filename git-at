@@ -187,11 +187,25 @@ _llm() {
 # Branches are named `<KEY>.<slug>`. `<KEY>-<slug>` is recognised because older
 # branches use it, but never produced.
 #
-# MAD-, MADRR- and NXERR- keys belong to the retired Jira instance: they are
-# linked and carried in trailers, never sent to a tracker.
+# Keys whose prefix is listed in `at.ticket.ignored-prefixes` belong to some other
+# tracker - a retired one, or one git-at does not talk to. They are recognised,
+# linked and carried in trailers, but never looked up or transitioned. Nothing is
+# ignored until the list says so.
 
-_is_legacy() {
-    case $1 in MAD-*|MADRR-*|NXERR-*) return 0 ;; esac
+# prefixes to treat as another tracker's, one per line
+_ignored_prefixes() {
+    v=${AT_IGNORED_PREFIXES-}
+    [ -n "$v" ] || v=$(git config --get-all at.ticket.ignored-prefixes 2>/dev/null) || v=''
+    printf '%s' "$v" | tr ',' ' ' | tr ' ' '\n' | grep . || true
+}
+
+# is this key another tracker's?
+_is_ignored_key() {
+    key=$(_upper "$1")
+    for p in $(_ignored_prefixes); do
+        p=$(_upper "${p%-}")
+        case $key in "$p"-*) return 0 ;; esac
+    done
     return 1
 }
 
@@ -239,9 +253,9 @@ _linear_post() {
         -H "Authorization: $api" -H 'Content-Type: application/json' --data @- 2>/dev/null
 }
 
-# the ticket title from linear. legacy keys have no tracker to ask.
+# the ticket title from linear. an ignored key has no tracker here to ask.
 _linear_title() {
-    _is_legacy "$1" && return 1
+    _is_ignored_key "$1" && return 1
     # shellcheck disable=SC2016  # $id is a graphql variable, not a shell one
     body='{"query":"query($id:String!){issue(id:$id){identifier title}}","variables":{"id":"'"$1"'"}}'
     r=$(_linear_post "$body") || return 1
@@ -254,7 +268,7 @@ _linear_title() {
 # issue's own team, so they have to be read before anything can be set.
 #   $1: ticket key   $2: state name
 _linear_move() {
-    _is_legacy "$1" && return 1
+    _is_ignored_key "$1" && return 1
     # shellcheck disable=SC2016  # graphql variables
     body='{"query":"query($id:String!){issue(id:$id){id team{states{nodes{id name}}}}}","variables":{"id":"'"$1"'"}}'
     r=$(_linear_post "$body") || return 1
@@ -277,7 +291,7 @@ _ticket_move() {
     [ -n "$want" ] || return 0
     key=$(cmd_i "${2:-}") || return 0
     [ -n "$key" ] || return 0
-    _is_legacy "$key" && return 0
+    _is_ignored_key "$key" && return 0
     _linear_move "$key" "$want" || _warn "could not move $key to '$want' - carrying on"
     return 0
 }
@@ -1471,10 +1485,15 @@ cmd__pr_title() {
     fi
 }
 
-# where a ticket lives. legacy keys are jira's, the rest are linear's.
+# where a ticket lives. an ignored key belongs to a tracker whose address only
+# `at.ticket.ignored-url` knows (a template taking the key); without one the key
+# is printed bare rather than linked somewhere wrong.
 _ticket_url() {
-    if _is_legacy "$1"; then
-        printf 'https://liquidweb.atlassian.net/browse/%s\n' "$1"
+    if _is_ignored_key "$1"; then
+        u=$(_cfg at.ticket.ignored-url AT_IGNORED_URL)
+        [ -n "$u" ] || return 1
+        # shellcheck disable=SC2059  # the template is the format, by design
+        printf "$u\n" "$1"
         return 0
     fi
     w=$(_cfg at.linear.workspace AT_LINEAR_WORKSPACE)

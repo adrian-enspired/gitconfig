@@ -53,6 +53,17 @@
 	# default ticket prefix for a bare number: `git dk 12345` -> COM-12345
 	# override per call with AT_TPREFIX=
 	prefix =
+	# prefixes belonging to another tracker - a retired one, or one git-at does
+	# not talk to. Keys matching these are recognised, linked and put in
+	# trailers, but never looked up or transitioned. Empty means nothing is
+	# ignored. Repeat the key, or separate with commas or spaces:
+	#   ignored-prefixes = MAD- MADRR- NXERR-
+	# override per call with AT_IGNORED_PREFIXES=
+	ignored-prefixes =
+	# where those keys live, as a template taking the key. Without it they are
+	# named but not linked:
+	#   ignored-url = https://example.atlassian.net/browse/%s
+	ignored-url =
 
 [at "linear"]
 	# a linear personal api key. keep this out of any repo: set it in your own

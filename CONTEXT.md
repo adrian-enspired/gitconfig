@@ -11,13 +11,13 @@ pull requests, and ticket tracking, with pluggable LLM assistance.
 The identifier of a Linear issue, e.g. `ENG-123`.
 _Avoid_: task id, jira id, issue number
 
-**Legacy ticket key**:
-A ticket key with a `MAD-`, `MADRR-`, or `NXERR-` prefix, which belongs to Jira. It is recognised
-but never acted on in the tracker.
-_Avoid_: jira key
+**Ignored ticket key**:
+A ticket key whose prefix the project has listed as belonging to another tracker. It is
+recognised and linked, but never looked up or transitioned.
+_Avoid_: legacy key, jira key
 
 **Linked branch**:
-A branch whose name begins with a ticket key or legacy ticket key, separated from its slug by `.`
+A branch whose name begins with a ticket key, separated from its slug by `.`
 (canonical) or `-` (recognised, never produced), e.g. `ENG-123.stripe-list`.
 
 ### Branches and remotes

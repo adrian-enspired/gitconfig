@@ -98,8 +98,10 @@ Linear over `curl` + `jq`. No MCP, no LLM: a tracker call has a fixed shape.
 
 - API key in `at.linear.apikey`, set in the user's own git config. The repo ships the key with
   an empty value.
-- Legacy keys — `MAD-`, `MADRR-`, `NXERR-` — are Jira. Recognised and linked in PR bodies,
-  never sent to a tracker.
+- Keys whose prefix is listed in `at.ticket.ignored-prefixes` belong to another tracker.
+  Recognised, linked and carried in trailers, never looked up or transitioned. The list is
+  empty by default, so nothing is ignored until it says so; `at.ticket.ignored-url` is the
+  template their links are built from, and without it they are named but not linked.
 - Branch names are `<KEY>.<slug>`. `<KEY>-<slug>` is recognised, never produced.
 
 Argument forms for `dk` / `uk`:
@@ -112,7 +114,7 @@ Argument forms for `dk` / `uk`:
 | `COM-12345.my-slug` | contains `.` | used as-is |
 | `my-slug` | none of the above | no ticket |
 
-Keys are uppercased, slugs lowercased. A legacy key, or any failure to fetch the title, stops
+Keys are uppercased, slugs lowercased. An ignored key, or any failure to fetch the title, stops
 with a request for an explicit slug.
 
 Slugs: lowercase kebab-case, 40 characters or fewer, taken from the ticket title. Over four
@@ -228,6 +230,8 @@ Every setting lives under `at.*`, every environment variable under `AT_*`.
 | Purpose | Setting | Environment |
 | --- | --- | --- |
 | Ticket prefix | `at.ticket.prefix` | `AT_TPREFIX` |
+| Other trackers' prefixes | `at.ticket.ignored-prefixes` | `AT_IGNORED_PREFIXES` |
+| Their link template | `at.ticket.ignored-url` | `AT_IGNORED_URL` |
 | Linear API key | `at.linear.apikey` | `AT_LINEAR_APIKEY` |
 | Linear workspace | `at.linear.workspace` | `AT_LINEAR_WORKSPACE` |
 | Linear endpoint | `at.linear.endpoint` | `AT_LINEAR_ENDPOINT` |
