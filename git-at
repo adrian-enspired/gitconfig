@@ -1000,12 +1000,26 @@ _dr_target() {
 # stop before replaying work that is already in the default branch: a squashed
 # parent looks like the branch's own commits from a merge base's point of view.
 #   $1: base   $2: branch   $3: default branch
-_check_replay() {
-    for c in $(git rev-list --reverse "$1..$2"); do
-        if _already_landed "$c" "$3"; then
-            _die "$(git log -1 --format='%h %s' "$c") has already landed on $3 - the branch point is wrong. pass the right one: \`git dr <commit-ish>\`"
-        fi
+_skip_landed() {
+    base=$1; b=$2; onto=$3
+    n=0
+    for c in $(git rev-list --reverse "$base..$b"); do
+        _already_landed "$c" "$onto" || break
+        base=$c
+        n=$((n + 1))
     done
+    [ "$n" -gt 0 ] &&
+        _warn "$n commit(s) at the start of this branch are already on $onto - replaying from $(git rev-parse --short "$base")"
+
+    # landed work *after* work that has not landed is a different animal: a
+    # cherry-pick, or a range that was never contiguous. rebase will drop or
+    # conflict on it, and either way the user should know it is there.
+    for c in $(git rev-list --reverse "$base..$b"); do
+        _already_landed "$c" "$onto" &&
+            _warn "note: $(git log -1 --format='%h %s' "$c") is on $onto too, but comes after work that is not"
+    done
+
+    printf '%s\n' "$base"
 }
 
 # rebase the current branch onto its parent, or onto the default branch
@@ -1033,12 +1047,19 @@ cmd_dr() {
 
     bp=$(_branch_point "$b" "${1:-}") || return 1
     base=${bp##* }
-    _warn "branch point: ${bp%% *} $(git rev-parse --short "$base") ($(git rev-list --count "$base..$b") to replay)"
-    _check_replay "$base" "$b" "$d"
+    _warn "branch point: ${bp%% *} $(git rev-parse --short "$base")"
+    base=$(_skip_landed "$base" "$b" "$d")
 
     onto=$(_dr_target "$b" "$d" "$base" "$choice") || return 1
     tip=$(_commit_of "$onto") || _die "cannot resolve '$onto'"
     [ "$tip" = "$base" ] && { printf 'already up to date with %s\n' "$onto"; return 0; }
+    n=$(git rev-list --count "$base..$b")
+    if [ "$n" -eq 0 ]; then
+        # everything on the branch has landed; the rebase would empty it
+        printf 'all of %s has landed on %s - nothing to replay\n' "$b" "$d"
+        return 0
+    fi
+    _warn "replaying $n commit(s) onto $onto"
 
     # parked for the resolver: a rebase finished by hand never comes back here
     git config "branch.$b.atbasepending" "$tip"

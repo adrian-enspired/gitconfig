@@ -52,10 +52,16 @@ the pending value is promoted: that is a rebase the user finished by hand with
 
 ### Content check
 
-Before replaying, each commit in the replay range is tested against the default branch: if its
-change is already present there, the command stops. This is what catches a squash-merged
-parent — git's own patch-id check cannot, because a squash collapses many commits into one
-whose patch-id matches none of them.
+Before replaying, each commit in the replay range is tested against the default branch. Work
+already present there is not replayed: the branch point advances past it and `dr` says how much
+it skipped. This is what catches a squash-merged parent — git's own patch-id check cannot,
+because a squash collapses many commits into one whose patch-id matches none of them.
+
+The same rule covers a branch whose own first commits have landed, which is the ordinary end of
+a stack: the remaining commits rebase onto the default branch and the merged ones are left
+behind. Landed work appearing *after* unlanded work is not skipped — that is a cherry-pick or a
+non-contiguous range, so it is reported and left for the rebase to drop or conflict on. A branch
+with nothing left to replay is reported as such rather than rebased into nothing.
 
 Implementation: `git apply --reverse --check` against a temporary index holding the default
 branch's tree (`GIT_INDEX_FILE` + `git read-tree`). The working tree is never touched.
