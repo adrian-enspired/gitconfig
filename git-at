@@ -1809,6 +1809,38 @@ cmd_urr() { _require_github; gh pr ready --undo "$@" && _ticket_move urr; }
 
 # ---------------------------------------------------------------- remotes ---
 
+# fork a repo and clone your fork: `upstream` is theirs, `origin` is yours
+#
+# The two-remote shape is what `ds`, `dr` and `r` are built around - one place to
+# take work from, another to push it to - and starting a checkout this way is
+# easier than rearranging remotes afterwards.
+#   $1: owner/repo   rest: passed straight to `gh repo fork`
+cmd_cf() {
+    [ -n "${1:-}" ] || _die 'usage: git cf <owner/repo> [gh options]'
+    _need gh
+    what=$1; shift
+    gh repo fork "$what" --clone "$@" || return 1
+
+    # gh names the remotes itself; check rather than assume, since a checkout
+    # missing `upstream` behaves like a plain clone everywhere else in this tool
+    dir=${what##*/}; dir=${dir%.git}
+    [ -d "$dir" ] || { _warn "cloned, but '$dir' is not where it landed - check the remotes yourself"; return 0; }
+
+    if ! git -C "$dir" remote get-url upstream >/dev/null 2>&1; then
+        parent=$(gh repo view "$what" --json parent \
+            -q '.parent | select(. != null) | .owner.login + "/" + .name' 2>/dev/null) || parent=''
+        [ -n "$parent" ] || parent=$what
+        git -C "$dir" remote add upstream "$(gh repo view "$parent" --json sshUrl -q .sshUrl 2>/dev/null)" 2>/dev/null &&
+            _warn "added the missing 'upstream' remote"
+    fi
+
+    printf 'cloned into ./%s\n' "$dir"
+    for r in upstream origin; do
+        u=$(git -C "$dir" remote get-url "$r" 2>/dev/null) &&
+            printf '  %-9s %s\n' "$r" "$u"
+    done
+}
+
 # add a new remote
 #   $1: owner
 #   $2: repo (defaults to origin repo)

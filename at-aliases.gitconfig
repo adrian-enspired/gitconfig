@@ -31,6 +31,7 @@
 	bdf  = "!~/.config/git/git-at bdf"
 	bk   = "!~/.config/git/git-at bk"
 	c    = "!~/.config/git/git-at c"
+	cf   = "!~/.config/git/git-at cf"
 	d    = "!~/.config/git/git-at d"
 	dk   = "!~/.config/git/git-at dk"
 	dr   = "!~/.config/git/git-at dr"
