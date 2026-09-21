@@ -36,6 +36,42 @@ at.status.<cmd>|AT_STATUS_<CMD>|ticket status per command: dk uk r rd rr urr
 SETTINGS
 }
 
+# what git-at leans on, and what stops working without it
+_deps() {
+    cat <<'DEPS'
+git|everything
+gh|pull requests (r, rd, rr, urr), cf, and the base lookup in bk -r
+curl|ticket titles, links and status changes
+jq|reading what the tracker sends back
+DEPS
+}
+
+show_deps() {
+    printf '\nDependencies:\n\n'
+    _deps | while IFS='|' read -r cmd what; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            printf '  %-6s ok\n' "$cmd"
+        else
+            printf '  %-6s MISSING - no %s\n' "$cmd" "$what"
+        fi
+    done
+
+    # the model runner is whatever at.llm.command names, so check that word
+    llm=$(git config --get at.llm.command 2>/dev/null) || llm=''
+    [ -n "$llm" ] || llm=$(git config --get at.llm.commitcommand 2>/dev/null) || llm=''
+    # only the first word is the command; the rest are its flags
+    # shellcheck disable=SC2086  # splitting is the point here
+    set -- $llm
+    if [ -z "${1:-}" ]; then
+        printf '  %-6s none set - no generated commit messages, PR bodies or slugs\n' 'model'
+    elif command -v "$1" >/dev/null 2>&1; then
+        printf '  %-6s ok (%s)\n' 'model' "$1"
+    else
+        # shellcheck disable=SC2016  # backticks are prose here
+        printf '  %-6s MISSING - at.llm.command names `%s`, not found on PATH\n' 'model' "$1"
+    fi
+}
+
 # a setting's value and where it came from. Anything that looks like a secret is
 # reported as present, never printed: this output gets pasted into bug reports.
 _value_of() {
@@ -79,7 +115,7 @@ dest=''
 for a in "$@"; do
     case $a in
         -n|--dry-run) dry=1 ;;
-        -h|--help)    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; show_settings; exit 0 ;;
+        -h|--help)    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; show_deps; show_settings; exit 0 ;;
         -*)           printf 'install: unknown option: %s\n' "$a" >&2; exit 2 ;;
         *)            dest=$a ;;
     esac
@@ -107,6 +143,8 @@ run cp "$src/at-aliases.gitconfig" "$dest/at-aliases.gitconfig" || exit 1
 
 [ -n "$dry" ] && exit 0
 
+show_deps
+say ''
 say "installed to $dest"
 say ''
 

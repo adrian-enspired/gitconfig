@@ -43,4 +43,20 @@ esac
 contains "$out" 'at.linear.apikey' 'though the setting is still listed'
 contains "$out" '<set,' 'as present, with its length'
 
+# ------------------------------------------------------- dependencies ---
+
+# `install` reports what is missing rather than letting a command fail later.
+# A PATH holding everything the installer itself needs, but no `gh`:
+mkdir -p "$AT_TMP/minbin"
+for t in sh git sed cat grep; do
+    p=$(command -v "$t") && ln -sf "$p" "$AT_TMP/minbin/$t"
+done
+out=$( (cd "$AT_TMP/cfg" && PATH="$AT_TMP/minbin" sh "$installer" --help) 2>&1 )
+contains "$out" 'Dependencies:' 'the installer reports dependencies'
+contains "$out" 'gh     MISSING' 'naming the one that is missing'
+contains "$out" 'git    ok' 'and the ones that are not'
+
+out=$( (cd "$AT_TMP/cfg" && sh "$installer" --help) 2>&1 )
+contains "$out" 'model' 'the model runner is checked too'
+
 t_done

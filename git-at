@@ -1756,6 +1756,21 @@ _pr() {
     bp=$(_branch_point "$b") || return 1
     point=${bp##* }
     [ -n "$title" ] || title=$(cmd__pr_title "$b")
+
+    # A branch checked out from someone else's fork (`bk -r alice`) tracks their
+    # remote, and the PR belongs in their repo against the branch it came from.
+    # The ordinary defaults would propose their commits into upstream as ours.
+    why=''
+    them=$(git config --get "branch.$b.remote" 2>/dev/null) || them=''
+    theirs=$(git config --get "branch.$b.merge" 2>/dev/null) || theirs=''
+    theirs=${theirs#refs/heads/}
+    case $them in ''|.|upstream|"$(_main_remote)") them='' ;; esac
+    if [ -n "$them" ] && [ -n "$theirs" ]; then
+        [ -n "$repo" ] || repo=$(_remote_repo "$them")
+        [ -n "$base" ] || base=$theirs
+        why=" (this branch tracks $them)"
+    fi
+
     [ -n "$base" ]  || base=$(_base_branch "$b")
     # `_die` inside a command substitution only ends the subshell, so its exit
     # status is the whole signal: swallowing it would carry on past a refusal
@@ -1773,8 +1788,14 @@ _pr() {
     fi
 
     mine=$(_main_remote) || _die 'no remotes - nowhere to push the branch'
-    printf 'opening a PR against %s on %s\n' "$base" "${repo:-$mine}" >&2
-    if ! git push -u "$mine" HEAD; then
+    printf 'opening a PR against %s on %s%s\n' "$base" "${repo:-$mine}" "$why" >&2
+    # -u only when there is nothing to overwrite: on a branch checked out from a
+    # collaborator's fork, the tracking ref is what says whose branch this is,
+    # and repointing it at our own fork would lose that on the first push
+    track=''
+    git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1 || track='-u'
+    # shellcheck disable=SC2086  # $track is a flag or nothing
+    if ! git push $track "$mine" HEAD; then
         rm -f "$f"
         # git's own hint says to pull, which would merge the old history back in
         _is_ancestor "$mine/$b" "$b" ||

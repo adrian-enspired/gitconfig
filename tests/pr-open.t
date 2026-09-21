@@ -132,4 +132,47 @@ contains "$create" '--base master' 'on the default branch'
 is "$(git -C "$AT_TMP/solo" rev-parse --abbrev-ref 'COM-7.solo-work@{upstream}')" 'upstream/COM-7.solo-work' \
     'and the branch is pushed there'
 
+# --------------------------------------------- a collaborator's branch ---
+
+# checked out from someone else's fork with `bk -r`: the PR belongs in their repo,
+# against the branch it came from. Proposing it into upstream would carry their
+# commits along as if they were ours.
+git init -q --bare "$AT_TMP/alice.git"
+git -C "$AT_TMP/pr" remote add alice 'git@github.com:alice/gitconfig.git'
+git -C "$AT_TMP/pr" config remote.alice.pushurl "$AT_TMP/alice.git"
+git -C "$AT_TMP/pr" switch -q master
+git -C "$AT_TMP/pr" switch -q -c COM-8.her-work
+write_commit pr hers 'hers' 'feat: her work'
+git -C "$AT_TMP/pr" push -q alice COM-8.her-work
+git -C "$AT_TMP/pr" switch -q -c r/alice/COM-8.her-work
+git -C "$AT_TMP/pr" config branch.r/alice/COM-8.her-work.remote alice
+git -C "$AT_TMP/pr" config branch.r/alice/COM-8.her-work.merge refs/heads/COM-8.her-work
+write_commit pr mine 'mine' 'feat: my suggestion'
+
+rm -f "$AT_TMP/gh-args"
+AT_OUT=$( (cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary) 2>&1 )
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--repo alice/gitconfig' 'the PR goes to their repo'
+contains "$create" '--base COM-8.her-work' 'against the branch it came from'
+contains "$AT_OUT" 'this branch tracks alice' 'and it says why'
+
+# the push must not repoint the tracking ref: it is what says whose branch this
+# is, and a second `git r` would otherwise target upstream instead
+is "$(git -C "$AT_TMP/pr" config --get branch.r/alice/COM-8.her-work.remote)" 'alice' \
+    'the push leaves the tracking remote alone'
+is "$(git -C "$AT_TMP/pr" config --get branch.r/alice/COM-8.her-work.merge)" 'refs/heads/COM-8.her-work' \
+    'and the tracked branch'
+
+rm -f "$AT_TMP/gh-args"
+(cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary) >/dev/null 2>&1
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--base COM-8.her-work' 'so a second PR still targets their branch'
+
+# explicit arguments still win
+rm -f "$AT_TMP/gh-args"
+(cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary --base master --repo nx-adrian/gitconfig) >/dev/null 2>&1
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--base master' '--base still overrides'
+contains "$create" '--repo nx-adrian/gitconfig' 'and so does --repo'
+
 t_done
