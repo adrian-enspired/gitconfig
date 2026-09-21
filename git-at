@@ -1007,7 +1007,9 @@ _dr_target() {
         case $choice in
             yes) _warn "restacking '$parent' first"
                  git switch -q "$parent" || return 1
-                 cmd_dr --restack || return 1
+                 # this function's stdout is the target ref the caller captures,
+                 # so the nested run reports to stderr or it corrupts the answer
+                 cmd_dr --restack >&2 || return 1
                  git switch -q "$b" || return 1 ;;
             no)  ;;
             *)   _die "parent '$parent' is behind $d - rebase it first with \`git dr\` on '$parent', or pass --restack (do it now) or --no-restack (rebase onto it anyway)" ;;
@@ -1061,7 +1063,8 @@ cmd_dr() {
     [ "$b" = "$d" ] && _die "on $d - checkout a branch first"
     git diff --quiet HEAD 2>/dev/null || _die 'uncommitted changes - commit or stash first'
 
-    cmd_ds >/dev/null || { git switch -q "$b"; _die 'sync failed'; }
+    # the sync is half of what `dr` does; hiding its output hid whether it ran
+    cmd_ds || { git switch -q "$b"; _die 'sync failed'; }
     git switch -q "$b" || return 1
 
     bp=$(_branch_point "$b" "${1:-}") || return 1
@@ -1071,20 +1074,25 @@ cmd_dr() {
 
     onto=$(_dr_target "$b" "$d" "$base" "$choice") || return 1
     tip=$(_commit_of "$onto") || _die "cannot resolve '$onto'"
-    [ "$tip" = "$base" ] && { printf 'already up to date with %s\n' "$onto"; return 0; }
+    was=$(git rev-parse --short "$b")
+    [ "$tip" = "$(_commit_of "$b")" ] &&
+        { printf '%s: already on %s (%s)\n' "$b" "$onto" "$was"; return 0; }
+
+    # nothing of its own left - every commit landed, or there never were any.
+    # The rebase still has work to do: it moves the branch up to the target.
     n=$(git rev-list --count "$base..$b")
     if [ "$n" -eq 0 ]; then
-        # everything on the branch has landed; the rebase would empty it
-        printf 'all of %s has landed on %s - nothing to replay\n' "$b" "$d"
-        return 0
+        _warn "$b has nothing of its own left - moving it to $onto"
+    else
+        _warn "replaying $n commit(s) onto $onto"
     fi
-    _warn "replaying $n commit(s) onto $onto"
 
     # parked for the resolver: a rebase finished by hand never comes back here
     git config "branch.$b.atbasepending" "$tip"
     git rebase --onto "$onto" "$base" "$b" || return 1
     git config "branch.$b.atbase" "$tip"
     git config --unset "branch.$b.atbasepending" 2>/dev/null || true
+    printf '%s: %s -> %s\n' "$b" "$was" "$(git rev-parse --short "$b")"
 }
 
 # ----------------------------------------------------------------- diffs ----

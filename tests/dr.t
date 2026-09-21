@@ -64,6 +64,20 @@ is "$(git -C "$AT_TMP/part" rev-list --count 'master..work')" '1' 'replaying onl
 is "$(git -C "$AT_TMP/part" log -1 --format='%s')" 'feat: second, still mine' 'the right commit survives'
 is "$(sha part 'work~1')" "$(sha part master)" 'sitting on master'
 
+# a branch with no commits of its own still gets moved up to the default branch:
+# that is what `git rebase master` would do, and not doing it leaves the user to
+# run the rebase themselves
+new_repo behind >/dev/null
+git -C "$AT_TMP/behind" switch -q -c trailing
+git -C "$AT_TMP/behind" switch -q master
+write_commit behind m 'm' 'chore: master moves on'
+git -C "$AT_TMP/behind" switch -q trailing
+
+at_out behind dr >/dev/null
+is "$AT_RC" '0' 'a branch with no work of its own is not an error'
+is "$(sha behind trailing)" "$(sha behind master)" 'and is fast-forwarded to master'
+contains "$AT_OUT" 'trailing:' 'reporting the move'
+
 # a branch whose work has all landed has nothing left to replay
 new_repo done >/dev/null
 git -C "$AT_TMP/done" switch -q -c finished
@@ -74,7 +88,8 @@ git -C "$AT_TMP/done" switch -q finished
 
 at_out done dr >/dev/null
 is "$AT_RC" '0' 'a fully landed branch is not an error'
-contains "$AT_OUT" 'nothing to replay' 'it just says there is nothing to do'
+contains "$AT_OUT" 'nothing of its own left' 'it says so'
+is "$(sha done finished)" "$(sha done master)" 'and moves the branch up to master'
 
 # ------------------------------------------------------ a live parent: restack ---
 
