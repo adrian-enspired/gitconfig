@@ -24,6 +24,20 @@ different questions on a stacked branch. `pw` is HEAD-relative and unaffected.
 
 `radd` is renamed `madd` (`m` for remote; `r` means pull request).
 
+## The main remote
+
+`origin` when there is one, else `upstream` - a clone taken straight from the authoritative
+repo has no origin - else whichever single remote exists. Every command that used to name
+`origin` outright resolves this instead: `d`, `oh`, `oor`, `or`, `bd`, `ds`, `madd`, and the
+push `r` makes before opening a PR.
+
+A checkout counts as a fork only when it has both that remote *and* `upstream`. That is what
+decides whether `ds` force-syncs from upstream and whether `r` targets a different repo than
+it pushes to. With one remote, both questions answer themselves.
+
+The push aliases stay literal: `o` is origin and `up` is upstream, because naming the remote is
+the point of having two of them.
+
 ## Branch point
 
 A branch point is the commit after which a branch's own work begins. It survives the parent

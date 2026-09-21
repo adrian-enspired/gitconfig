@@ -110,4 +110,26 @@ rm -f "$AT_TMP/gh-args"
 create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
 contains "$create" '--repo someone-else/gitconfig' 'a real fork targets upstream'
 
+# ------------------------------------------- a clone with no origin at all ---
+
+# taken straight from the authoritative repo: `upstream` is the only remote, so
+# it is both where the branch is pushed and where the PR is opened
+new_repo solo >/dev/null
+git init -q --bare "$AT_TMP/solo-remote.git"
+git -C "$AT_TMP/solo" remote add upstream 'git@github.com:adrian-enspired/gitconfig.git'
+git -C "$AT_TMP/solo" config remote.upstream.pushurl "$AT_TMP/solo-remote.git"
+git -C "$AT_TMP/solo" push -q upstream master
+git -C "$AT_TMP/solo" switch -q -c COM-7.solo-work
+write_commit solo one 'one' 'feat: work in a direct clone'
+
+rm -f "$AT_TMP/gh-args"
+AT_OUT=$( (cd "$AT_TMP/solo" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" r -y --no-summary) 2>&1 )
+rc=$?
+is "$rc" '0' 'a clone with no origin still opens a PR'
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--repo adrian-enspired/gitconfig' 'against the remote it does have'
+contains "$create" '--base master' 'on the default branch'
+is "$(git -C "$AT_TMP/solo" rev-parse --abbrev-ref 'COM-7.solo-work@{upstream}')" 'upstream/COM-7.solo-work' \
+    'and the branch is pushed there'
+
 t_done

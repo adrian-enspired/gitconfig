@@ -83,12 +83,28 @@ contains "$AT_OUT" ' -> ' 'and reports the move'
 is "$(git -C "$AT_TMP/solo" rev-parse master)" \
    "$(git -C "$AT_TMP/solo" rev-parse origin/master)" 'and is up to date with origin'
 
+# ------------------------------------------- a clone with no origin at all ---
+
+# cloned straight from the authoritative repo, then renamed: `upstream` is the
+# only remote, and it is the one to follow
+fork only
+git -C "$AT_TMP/only" remote remove origin
+git -C "$AT_TMP/only" remote set-url upstream "$AT_TMP/only-origin.git"
+write_commit only-seed x 'x' 'feat: upstream work'
+git -C "$AT_TMP/only-seed" push -q "$AT_TMP/only-origin.git" master
+
+at_out only ds >/dev/null
+is "$AT_RC" '0' 'an upstream-only clone syncs'
+contains "$AT_OUT" 'master:' 'and reports the local move'
+is "$(git -C "$AT_TMP/only" rev-parse master)" \
+   "$(git -C "$AT_TMP/only" rev-parse upstream/master)" 'following upstream'
+
 # ------------------------------------------------------------ no remotes ---
 
 new_repo alone >/dev/null
 at_out alone ds >/dev/null
-is "$AT_RC" '0' 'no origin is not an error'
-contains "$AT_OUT" 'no origin' 'it just says so'
+is "$AT_RC" '0' 'no remotes is not an error'
+contains "$AT_OUT" 'no remotes' 'it just says so'
 
 # ------------------------------------------------- nothing left to do ---
 

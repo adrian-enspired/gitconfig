@@ -33,27 +33,43 @@ _label() {
 
 # ------------------------------------------------------------- discovery ----
 
+# the remote this checkout belongs to: `origin` when there is one, else
+# `upstream` - a clone taken straight from the authoritative repo has no origin -
+# else whichever single remote exists. Everything that used to say `origin`
+# outright asks this instead, so an upstream-only clone works like any other.
+_main_remote() {
+    for r in origin upstream; do
+        git remote get-url "$r" >/dev/null 2>&1 && { printf '%s\n' "$r"; return 0; }
+    done
+    r=$(git remote | head -n1)
+    [ -n "$r" ] || return 1
+    printf '%s\n' "$r"
+}
+
 # discover the default branch name
 cmd_d() {
-    b=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || b=''
-    b=${b#origin/}
-    [ -n "$b" ] || b=$(git ls-remote --symref origin HEAD 2>/dev/null |
+    m=$(_main_remote) || m=origin
+    b=$(git symbolic-ref --quiet --short "refs/remotes/$m/HEAD" 2>/dev/null) || b=''
+    b=${b#"$m/"}
+    [ -n "$b" ] || b=$(git ls-remote --symref "$m" HEAD 2>/dev/null |
         awk '$1=="ref:"{sub(/^refs\/heads\//,"",$2); print $2; exit}')
     [ -n "$b" ] || { git show-ref --verify --quiet refs/heads/master && b=master || b=main; }
     printf '%s\n' "$b"
 }
 
-# discover owner/repo from origin
+# discover owner/repo from the main remote
 cmd_oor() {
-    git remote get-url origin | sed -E 's#/+$##; s#\.git$##; s#^.*[/:]([^/]+/[^/]+)$#\1#'
+    git remote get-url "$(_main_remote)" |
+        sed -E 's#/+$##; s#\.git$##; s#^.*[/:]([^/]+/[^/]+)$#\1#'
 }
 
 # discover the repo name from origin
 cmd_or() { o=$(cmd_oor) && printf '%s\n' "${o##*/}"; }
 
-# discover the host from origin
+# discover the host from the main remote
 cmd_oh() {
-    git remote get-url origin | sed -E 's#^([^/]*://)?([^@/]*@)?([^:/]+).*#\3#'
+    git remote get-url "$(_main_remote)" |
+        sed -E 's#^([^/]*://)?([^@/]*@)?([^:/]+).*#\3#'
 }
 
 # repo name, falling back to the worktree directory when there is no origin
@@ -64,7 +80,7 @@ _repo_name() {
 }
 
 _require_github() {
-    [ "$(cmd_oh)" = "github.com" ] || _die "origin host is not github"
+    [ "$(cmd_oh)" = "github.com" ] || _die "the main remote is not on github"
     _need gh
 }
 
@@ -532,9 +548,10 @@ _b_match() {
 #   $1: "-y" = skip confirmation
 cmd_bd() {
     d=$(cmd_d); cur=$(_cur || true)
-    # judge "merged" against origin's copy of the default branch when we have it
-    if git show-ref --verify --quiet "refs/remotes/origin/$d"; then
-        ref="origin/$d"
+    # judge "merged" against the remote's copy of the default branch when we have it
+    m=$(_main_remote) || m=''
+    if [ -n "$m" ] && git show-ref --verify --quiet "refs/remotes/$m/$d"; then
+        ref="$m/$d"
     elif git show-ref --verify --quiet "refs/heads/$d"; then
         ref=$d
     else
@@ -878,17 +895,18 @@ cmd_s() {
 
 # ----------------------------------------------------------------- sync ----
 
-# bring origin's default branch up to date with the fork parent.
-# github: `gh repo sync`. anything else: fetch upstream and push it to origin.
+# bring the fork's default branch up to date with its parent.
+# github: `gh repo sync`. anything else: fetch upstream and push it across.
+#   $1: default branch   $2: the fork's remote
 _sync_fork() {
-    d=$1
+    d=$1; m=$2
     if [ "$(cmd_oh 2>/dev/null)" = github.com ] && command -v gh >/dev/null 2>&1; then
         gh repo sync --force "$(cmd_oor)"
     else
         # --force to match what `gh repo sync --force` does: origin's default
         # branch is meant to be a copy of upstream's, not a place to commit
         git fetch upstream --prune &&
-            git push --force origin "refs/remotes/upstream/$d:refs/heads/$d"
+            git push --force "$m" "refs/remotes/upstream/$d:refs/heads/$d"
     fi
 }
 
@@ -901,50 +919,51 @@ cmd_ds() {
     yes=''
     case ${1:-} in -y|--yes) yes=1 ;; esac
     d=$(cmd_d) || return 1
-    if ! git remote get-url origin >/dev/null 2>&1; then
-        _warn 'no origin remote - nothing to sync'
+    m=$(_main_remote) || {
+        _warn 'no remotes - nothing to sync'
         return 0
-    fi
+    }
 
-    # an `upstream` remote means the repo is a fork, so origin is sync'd from it
-    if git remote get-url upstream >/dev/null 2>&1; then
-        for r in origin upstream; do
+    # a fork has both: work is pushed to one and taken from the other. A clone
+    # straight from the authoritative repo has only the one, and just follows it.
+    if [ "$m" != upstream ] && git remote get-url upstream >/dev/null 2>&1; then
+        for r in "$m" upstream; do
             git fetch -q "$r" --prune ||
                 _warn "fetch from '$r' failed - working from what is already here"
         done
-        # origin's default branch is meant to be strictly downstream of upstream.
+        # the fork's default branch is meant to be strictly downstream of upstream.
         # anything on it that upstream lacks is about to be thrown away, and a
         # forced sync is not the place to find that out afterwards.
-        extra=$(git rev-list "refs/remotes/upstream/$d..refs/remotes/origin/$d" 2>/dev/null) || extra=''
+        extra=$(git rev-list "refs/remotes/upstream/$d..refs/remotes/$m/$d" 2>/dev/null) || extra=''
         if [ -n "$extra" ] && [ -z "$yes" ]; then
-            _warn "origin/$d has commits upstream does not:"
-            git log --oneline "refs/remotes/upstream/$d..refs/remotes/origin/$d" >&2
-            _confirm "overwrite origin/$d from upstream/$d? [y/N] " || return 1
+            _warn "$m/$d has commits upstream does not:"
+            git log --oneline "refs/remotes/upstream/$d..refs/remotes/$m/$d" >&2
+            _confirm "overwrite $m/$d from upstream/$d? [y/N] " || return 1
         fi
-        was=$(git rev-parse --short "refs/remotes/origin/$d" 2>/dev/null) || was='?'
-        if out=$(_sync_fork "$d" 2>&1); then
-            git fetch -q origin --prune || true
-            now=$(git rev-parse --short "refs/remotes/origin/$d" 2>/dev/null) || now='?'
+        was=$(git rev-parse --short "refs/remotes/$m/$d" 2>/dev/null) || was='?'
+        if out=$(_sync_fork "$d" "$m" 2>&1); then
+            git fetch -q "$m" --prune || true
+            now=$(git rev-parse --short "refs/remotes/$m/$d" 2>/dev/null) || now='?'
             if [ "$was" = "$now" ]; then
-                printf 'origin/%s: already level with upstream (%s)\n' "$d" "$now"
+                printf '%s/%s: already level with upstream (%s)\n' "$m" "$d" "$now"
             else
-                printf 'origin/%s: %s -> %s, from upstream\n' "$d" "$was" "$now"
+                printf '%s/%s: %s -> %s, from upstream\n' "$m" "$d" "$was" "$now"
             fi
         else
-            _warn "syncing origin/$d from upstream failed - carrying on with origin as it is:"
+            _warn "syncing $m/$d from upstream failed - carrying on with $m as it is:"
             printf '%s\n' "$out" | sed 's/^/  /' >&2
         fi
     else
-        git fetch -q origin --prune ||
-            _warn "fetch from 'origin' failed - working from what is already here"
+        git fetch -q "$m" --prune ||
+            _warn "fetch from '$m' failed - working from what is already here"
     fi
 
     git switch -q "$d" || _die "cannot switch to $d - commit or stash first"
     before=$(git rev-parse --short "$d")
     # --ff-only is authoritative here regardless of pull.rebase: a diverged local
     # default branch is a thing to look at, not to silently rebase away
-    if git merge-base --is-ancestor "$d" "refs/remotes/origin/$d" 2>/dev/null; then
-        git merge -q --ff-only "refs/remotes/origin/$d" || return 1
+    if git merge-base --is-ancestor "$d" "refs/remotes/$m/$d" 2>/dev/null; then
+        git merge -q --ff-only "refs/remotes/$m/$d" || return 1
         after=$(git rev-parse --short "$d")
         if [ "$before" = "$after" ]; then
             printf '%s: already up to date (%s)\n' "$d" "$after"
@@ -954,10 +973,10 @@ cmd_ds() {
         return 0
     fi
 
-    _warn "local $d has diverged from origin/$d:"
-    git log --oneline "refs/remotes/origin/$d..$d" >&2
-    [ -n "$yes" ] || _confirm "reset $d to origin/$d? [y/N] " || return 1
-    git reset -q --hard "refs/remotes/origin/$d"
+    _warn "local $d has diverged from $m/$d:"
+    git log --oneline "refs/remotes/$m/$d..$d" >&2
+    [ -n "$yes" ] || _confirm "reset $d to $m/$d? [y/N] " || return 1
+    git reset -q --hard "refs/remotes/$m/$d"
     printf '%s: reset to %s\n' "$d" "$(git rev-parse --short "$d")"
 }
 
@@ -1562,8 +1581,10 @@ _is_fork_of() {
 # the repo a PR is opened against: upstream, origin, gh's answer, the default
 # branch's remote, then whatever is listed first.
 _base_repo() {
-    head=$(_remote_repo origin 2>/dev/null) || head=''
-    if git remote get-url upstream >/dev/null 2>&1; then
+    mine=$(_main_remote) || mine=''
+    head=$(_remote_repo "$mine" 2>/dev/null) || head=''
+    # only a fork checkout has somewhere else to send the PR
+    if [ -n "$mine" ] && [ "$mine" != upstream ] && git remote get-url upstream >/dev/null 2>&1; then
         up=$(_remote_repo upstream)
         if [ -z "$head" ] || [ "$head" = "$up" ] || _is_fork_of "$head" "$up"; then
             printf '%s\n' "$up"
@@ -1593,7 +1614,7 @@ _base_branch() {
     d=$(cmd_d)
     parent=$(git config --get "branch.$1.atparent" 2>/dev/null) || parent=''
     [ -n "$parent" ] || { printf '%s\n' "$d"; return 0; }
-    for r in upstream origin $(git remote); do
+    for r in upstream $(_main_remote) $(git remote); do
         git rev-parse --verify --quiet "refs/remotes/$r/$parent" >/dev/null 2>&1 &&
             { printf '%s\n' "$parent"; return 0; }
     done
@@ -1743,11 +1764,12 @@ _pr() {
         [ -n "$ed" ] && { sh -c "$ed \"\$1\"" _ "$f" || { rm -f "$f"; return 1; }; }
     fi
 
-    printf 'opening a PR against %s on %s\n' "$base" "${repo:-origin}" >&2
-    if ! git push -u origin HEAD; then
+    mine=$(_main_remote) || _die 'no remotes - nowhere to push the branch'
+    printf 'opening a PR against %s on %s\n' "$base" "${repo:-$mine}" >&2
+    if ! git push -u "$mine" HEAD; then
         rm -f "$f"
         # git's own hint says to pull, which would merge the old history back in
-        _is_ancestor "origin/$b" "$b" ||
+        _is_ancestor "$mine/$b" "$b" ||
             _warn "'$b' was rewritten since it was last pushed - push it with \`git oof\` first (do not pull)"
         return 1
     fi
@@ -1786,7 +1808,7 @@ cmd_urr() { _require_github; gh pr ready --undo "$@" && _ticket_move urr; }
 #   $4: host (defaults to origin host)
 cmd_madd() {
     [ -n "${1:-}" ] || _die 'usage: git madd <owner> [repo] [remote] [host]'
-    o=$(git remote get-url origin)
+    o=$(git remote get-url "$(_main_remote)")
     repo=${2:-$(cmd_or)}
     name=${3:-$1}
     host=${4:-$(cmd_oh)}
