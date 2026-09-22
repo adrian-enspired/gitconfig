@@ -5,6 +5,9 @@
 #   ./install            install, then say what is left to configure
 #   ./install <dir>      install somewhere else
 #   ./install -n         dry run: print what would be copied
+#   ./install --skill    install the agent skill too, without asking
+#   ./install --no-skill skip it without asking
+#   (a skill that is already installed is kept current without asking)
 #   ./install --help     usage, and every setting with its current value
 #
 # Copies the script, the model prompt files and the alias file. Your own
@@ -33,7 +36,69 @@ at.llm.rules|AT_LLM_RULES|directory holding the prompt files (default: alongside
 at.commit.coauthor|AT_COMMIT_COAUTHOR|the trailer `git c --cc` adds
 at.patch.dir|AT_PATCH_DIR|where the patch commands write (default: ~/patches)
 at.status.<cmd>|AT_STATUS_<CMD>|ticket status per command: dk uk r rd rr urr
+at.agent.mode|AT_AGENT_MODE|act (default) or suggest: whether an agent may run git for you
+at.agent.skilldir|AT_AGENT_SKILLDIR|where to install the agent skill (default: ~/.claude/skills/git-at)
 SETTINGS
+}
+
+# what git-at leans on, and what stops working without it
+_deps() {
+    cat <<'DEPS'
+git|everything
+gh|pull requests (r, rd, rr, urr), cf, and the base lookup in bk -r
+curl|ticket titles, links and status changes
+jq|reading what the tracker sends back
+DEPS
+}
+
+show_deps() {
+    printf '\nDependencies:\n\n'
+    _deps | while IFS='|' read -r cmd what; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            printf '  %-6s ok\n' "$cmd"
+        else
+            printf '  %-6s MISSING - no %s\n' "$cmd" "$what"
+        fi
+    done
+
+    # the model runner is whatever at.llm.command names, so check that word
+    llm=$(git config --get at.llm.command 2>/dev/null) || llm=''
+    [ -n "$llm" ] || llm=$(git config --get at.llm.commitcommand 2>/dev/null) || llm=''
+    # only the first word is the command; the rest are its flags
+    # shellcheck disable=SC2086  # splitting is the point here
+    set -- $llm
+    if [ -z "${1:-}" ]; then
+        printf '  %-6s none set - no generated commit messages, PR bodies or slugs\n' 'model'
+    elif command -v "$1" >/dev/null 2>&1; then
+        printf '  %-6s ok (%s)\n' 'model' "$1"
+    else
+        # shellcheck disable=SC2016  # backticks are prose here
+        printf '  %-6s MISSING - at.llm.command names `%s`, not found on PATH\n' 'model' "$1"
+    fi
+
+    # `--allowed-tools ""` loses its empty string if the value was double-quoted
+    # when it was set, and then the flag swallows whatever follows it: settings,
+    # tools and project config all come back. Catch that shape in every model key.
+    hint=''
+    for k in at.llm.command at.llm.slugcommand at.llm.commitcommand at.llm.prcommand; do
+        v=$(git config --get "$k" 2>/dev/null) || continue
+        lost=''
+        # shellcheck disable=SC2086  # splitting into words is the point
+        set -- $v
+        while [ $# -gt 0 ]; do
+            case $1 in
+                --allowed-tools|--setting-sources)
+                    case ${2:-} in ''|--*) lost="${lost}${lost:+ }$1" ;; esac ;;
+            esac
+            shift
+        done
+        [ -n "$lost" ] || continue
+        printf '  %-6s WARNING - %s: %s with no value\n' 'model' "$k" "$lost"
+        hint=1
+    done
+    [ -n "$hint" ] &&
+        printf '         the empty values were lost when it was set; write them as\n         --allowed-tools= --setting-sources= so there is nothing to quote\n'
+    return 0
 }
 
 # a setting's value and where it came from. Anything that looks like a secret is
@@ -76,10 +141,13 @@ show_settings() {
 
 dry=''
 dest=''
+skill=''
 for a in "$@"; do
     case $a in
         -n|--dry-run) dry=1 ;;
-        -h|--help)    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; show_settings; exit 0 ;;
+        --skill)      skill=yes ;;
+        --no-skill)   skill=no ;;
+        -h|--help)    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; show_deps; show_settings; exit 0 ;;
         -*)           printf 'install: unknown option: %s\n' "$a" >&2; exit 2 ;;
         *)            dest=$a ;;
     esac
@@ -105,8 +173,43 @@ done
 # 2. the alias file, which is what makes `git dr` work rather than `git-at dr`
 run cp "$src/at-aliases.gitconfig" "$dest/at-aliases.gitconfig" || exit 1
 
+# 3. the agent skill, if wanted. Any harness that reads a markdown instruction
+#    file can use it; the default path is where Claude Code looks, and
+#    at.agent.skilldir points anywhere else.
+skilldir=$(git config --get at.agent.skilldir 2>/dev/null) || skilldir=''
+[ -n "$skilldir" ] || skilldir="$HOME/.claude/skills/git-at"
+if [ -f "$src/skills/git-at/SKILL.md" ]; then
+    had=''
+    [ -f "$skilldir/SKILL.md" ] && had=1
+    # already installed is an answer: keep it current like everything else here,
+    # and only ask the first time
+    if [ -z "$skill" ]; then
+        if [ -n "$had" ]; then
+            skill=yes
+        elif [ -z "$dry" ]; then
+            printf 'install the agent skill into %s? [y/N] ' "$skilldir"
+            read -r reply || reply=''
+            case $reply in y|Y|yes|Yes) skill=yes ;; *) skill=no ;; esac
+        fi
+    fi
+    if [ "$skill" = yes ]; then
+        if [ -n "$had" ] && cmp -s "$src/skills/git-at/SKILL.md" "$skilldir/SKILL.md"; then
+            [ -n "$dry" ] || say "agent skill: already up to date in $skilldir"
+        else
+            run mkdir -p "$skilldir" || exit 1
+            run cp "$src/skills/git-at/SKILL.md" "$skilldir/SKILL.md" || exit 1
+            if [ -z "$dry" ]; then
+                if [ -n "$had" ]; then say "agent skill updated in $skilldir"
+                else say "agent skill installed to $skilldir"; fi
+            fi
+        fi
+    fi
+fi
+
 [ -n "$dry" ] && exit 0
 
+show_deps
+say ''
 say "installed to $dest"
 say ''
 
@@ -126,7 +229,7 @@ unset_key() { ! git config --global --get "$1" >/dev/null 2>&1; }
 
 missing=''
 for pair in \
-    'at.ticket.prefix:COM:your linear team prefix, used when you pass a bare number' \
+    'at.ticket.prefix:AT:your linear team prefix, used when you pass a bare number' \
     'at.linear.apikey:lin_api_xxx:a linear personal api key' \
     'at.linear.workspace:nexcess:your linear workspace slug, for ticket links'
 do
@@ -141,8 +244,9 @@ done
 # a model the machine actually has beats a model from an example
 # `claude -p` is an agent: left alone it loads MCP servers, settings and CLAUDE.md,
 # and will use tools instead of answering. Emptying both makes it a text transform
-# and takes about two seconds off every call.
-claude_flags='--allowed-tools "" --setting-sources ""'
+# and takes about two seconds off every call. `=` with nothing after, because a
+# literal "" is lost the moment someone double-quotes the value while setting it.
+claude_flags='--allowed-tools= --setting-sources='
 if command -v ollama >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
     small='ollama run qwen3:4b'; large='ollama run qwen3:4b'
 else

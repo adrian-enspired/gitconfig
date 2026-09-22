@@ -83,12 +83,60 @@ contains "$AT_OUT" ' -> ' 'and reports the move'
 is "$(git -C "$AT_TMP/solo" rev-parse master)" \
    "$(git -C "$AT_TMP/solo" rev-parse origin/master)" 'and is up to date with origin'
 
+# ------------------------------------------- a clone with no origin at all ---
+
+# cloned straight from the authoritative repo, then renamed: `upstream` is the
+# only remote, and it is the one to follow
+fork only
+git -C "$AT_TMP/only" remote remove origin
+git -C "$AT_TMP/only" remote set-url upstream "$AT_TMP/only-origin.git"
+write_commit only-seed x 'x' 'feat: upstream work'
+git -C "$AT_TMP/only-seed" push -q "$AT_TMP/only-origin.git" master
+
+at_out only ds >/dev/null
+is "$AT_RC" '0' 'an upstream-only clone syncs'
+contains "$AT_OUT" 'master:' 'and reports the local move'
+is "$(git -C "$AT_TMP/only" rev-parse master)" \
+   "$(git -C "$AT_TMP/only" rev-parse upstream/master)" 'following upstream'
+
 # ------------------------------------------------------------ no remotes ---
 
 new_repo alone >/dev/null
 at_out alone ds >/dev/null
-is "$AT_RC" '0' 'no origin is not an error'
-contains "$AT_OUT" 'no origin' 'it just says so'
+is "$AT_RC" '0' 'no remotes is not an error'
+contains "$AT_OUT" 'no remotes' 'it just says so'
+
+# --------------------------------------------- the fork's sync is refused ---
+
+# upstream moved, but updating the fork fails - gh without the `workflow` scope,
+# a read-only token, anything. Local must still follow upstream: it is the
+# authoritative copy, and the fork's copy is a courtesy.
+fork refused
+write_commit refused-seed new 'new' 'feat: upstream moved'
+git -C "$AT_TMP/refused-seed" push -q "$AT_TMP/refused-upstream.git" master
+git -C "$AT_TMP/refused" config remote.origin.pushurl "$AT_TMP/nowhere.git"
+
+at_out refused ds >/dev/null
+is "$AT_RC" '3' 'a fork left behind upstream is a failed sync (exit 3)'
+contains "$AT_OUT" 'could not update origin/master' 'saying which half failed'
+is "$(git -C "$AT_TMP/refused" rev-parse master)" \
+   "$(git -C "$AT_TMP/refused" rev-parse upstream/master)" 'local master is still brought current'
+contains "$AT_OUT" 'from upstream' 'saying where it came from'
+
+# the commands that rely on a sync must not carry on past a failed one
+git -C "$AT_TMP/refused" switch -q -c feature
+write_commit refused mine 'mine' 'feat: my work'
+at_out refused dr >/dev/null
+is "$AT_RC" '1' 'dr stops when the fork could not be synced'
+contains "$AT_OUT" 'sync failed' 'and says so'
+is "$(git -C "$AT_TMP/refused" branch --show-current)" 'feature' 'leaving you on your branch'
+
+at_out refused dk AT-1 next >/dev/null
+is "$AT_RC" '1' 'dk stops too'
+case "$(git -C "$AT_TMP/refused" branch --format='%(refname:short)')" in
+    *AT-1.next*) not_ok 'without creating the branch' ;;
+    *)            ok 'without creating the branch' ;;
+esac
 
 # ------------------------------------------------- nothing left to do ---
 

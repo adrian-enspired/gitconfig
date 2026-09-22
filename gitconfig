@@ -50,7 +50,7 @@
 	autocorrect = prompt
 
 [at "ticket"]
-	# default ticket prefix for a bare number: `git dk 12345` -> COM-12345
+	# default ticket prefix for a bare number: `git dk 12345` -> AT-12345
 	# override per call with AT_TPREFIX=
 	prefix =
 	# prefixes belonging to another tracker - a retired one, or one git-at does
@@ -74,7 +74,7 @@
 
 [at "llm"]
 	# any command taking a prompt on stdin and writing text to stdout:
-	#   claude -p --model haiku --allowed-tools "" --setting-sources ""
+	#   claude -p --model haiku --allowed-tools= --setting-sources=
 	#   ollama run qwen3:4b
 	# the two empty flags matter: `claude -p` is an agent, and left with its
 	# tools and settings it will go and look at the repo instead of answering.

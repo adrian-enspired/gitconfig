@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # `dr`: rebase onto the parent branch when there is one, onto the default branch
-# otherwise, and stop rather than replay work that has already landed.
+# otherwise, skipping work that has already landed rather than replaying it.
 #
 # No remotes here, so `ds` skips the sync; these fixtures are about what `dr`
 # rebases onto and what it records.
@@ -39,8 +39,57 @@ git -C "$AT_TMP/sq" branch -q -D parent
 git -C "$AT_TMP/sq" switch -q child
 
 at_out sq dr >/dev/null
-is "$AT_RC" '1' 'stops rather than replaying work that already landed'
-contains "$AT_OUT" 'already' 'and says the work already landed'
+is "$AT_RC" '0' 'the landed work is skipped, not replayed'
+contains "$AT_OUT" 'already on master' 'and it says what it skipped'
+is "$(git -C "$AT_TMP/sq" rev-list --count 'master..child')" '1' "only the child's own commit is replayed"
+is "$(sha sq 'child~1')" "$(sha sq master)" 'which now sits on master'
+
+# ------------------------------------------- the branch's own work, part landed ---
+
+# two commits on a branch; the first was merged upstream on its own. Rebasing
+# should carry the second onto master and leave the first behind.
+new_repo part >/dev/null
+git -C "$AT_TMP/part" switch -q -c work
+write_commit part a 'a' 'feat: first, merged already'
+write_commit part b 'b' 'feat: second, still mine'
+git -C "$AT_TMP/part" config branch.work.atbase "$(sha part master)"
+git -C "$AT_TMP/part" switch -q master
+git -C "$AT_TMP/part" merge -q --squash 'work~1' >/dev/null
+git -C "$AT_TMP/part" commit -qm 'squashed: the first commit'
+git -C "$AT_TMP/part" switch -q work
+
+at_out part dr >/dev/null
+is "$AT_RC" '0' 'a partly-landed branch rebases'
+is "$(git -C "$AT_TMP/part" rev-list --count 'master..work')" '1' 'replaying only what has not landed'
+is "$(git -C "$AT_TMP/part" log -1 --format='%s')" 'feat: second, still mine' 'the right commit survives'
+is "$(sha part 'work~1')" "$(sha part master)" 'sitting on master'
+
+# a branch with no commits of its own still gets moved up to the default branch:
+# that is what `git rebase master` would do, and not doing it leaves the user to
+# run the rebase themselves
+new_repo behind >/dev/null
+git -C "$AT_TMP/behind" switch -q -c trailing
+git -C "$AT_TMP/behind" switch -q master
+write_commit behind m 'm' 'chore: master moves on'
+git -C "$AT_TMP/behind" switch -q trailing
+
+at_out behind dr >/dev/null
+is "$AT_RC" '0' 'a branch with no work of its own is not an error'
+is "$(sha behind trailing)" "$(sha behind master)" 'and is fast-forwarded to master'
+contains "$AT_OUT" 'trailing:' 'reporting the move'
+
+# a branch whose work has all landed has nothing left to replay
+new_repo done >/dev/null
+git -C "$AT_TMP/done" switch -q -c finished
+write_commit done x 'x' 'feat: all of it'
+git -C "$AT_TMP/done" switch -q master
+squash_merge done finished
+git -C "$AT_TMP/done" switch -q finished
+
+at_out done dr >/dev/null
+is "$AT_RC" '0' 'a fully landed branch is not an error'
+contains "$AT_OUT" 'nothing of its own left' 'it says so'
+is "$(sha done finished)" "$(sha done master)" 'and moves the branch up to master'
 
 # ------------------------------------------------------ a live parent: restack ---
 

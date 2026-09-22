@@ -59,4 +59,34 @@ at_out none bd -y >/dev/null
 is "$AT_RC" '0' 'nothing to delete is not an error'
 contains "$AT_OUT" 'no branches' 'and it says so'
 
+# ------------------------------------------------ it syncs before judging ---
+
+# a branch squash-merged upstream, while local master has not caught up. Judged
+# against stale local refs it looks unlanded; bd has to sync to see the truth.
+git init -q --bare "$AT_TMP/sync-origin.git"
+new_repo sync >/dev/null
+git -C "$AT_TMP/sync" remote add origin "$AT_TMP/sync-origin.git"
+git -C "$AT_TMP/sync" push -q origin master
+git -C "$AT_TMP/sync" switch -q -c landed-upstream
+write_commit sync work 'work' 'feat: landed elsewhere'
+git -C "$AT_TMP/sync" switch -q master
+
+# someone else lands it, straight onto the remote
+git clone -q "$AT_TMP/sync-origin.git" "$AT_TMP/sync-other"
+git -C "$AT_TMP/sync-other" config user.email o@example.invalid
+git -C "$AT_TMP/sync-other" config user.name other
+git -C "$AT_TMP/sync-other" config commit.gpgsign false
+printf 'work\n' >"$AT_TMP/sync-other/work"
+git -C "$AT_TMP/sync-other" add work
+git -C "$AT_TMP/sync-other" commit -qm 'squashed: landed elsewhere'
+git -C "$AT_TMP/sync-other" push -q origin master
+
+git -C "$AT_TMP/sync" switch -q -c where-i-was
+at_out sync bd -y >/dev/null
+case "$(git -C "$AT_TMP/sync" branch --format='%(refname:short)')" in
+    *landed-upstream*) not_ok 'bd syncs first, so it sees what landed remotely' ;;
+    *)                 ok 'bd syncs first, so it sees what landed remotely' ;;
+esac
+is "$(git -C "$AT_TMP/sync" branch --show-current)" 'where-i-was' 'and returns you to your branch'
+
 t_done
