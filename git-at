@@ -25,6 +25,9 @@ _confirm() {
 }
 _cur() { git symbolic-ref --short -q HEAD; }
 
+# one argument, safe to hand back to `eval` with its spaces and quotes intact
+_quote() { printf "'%s'" "$(printf '%s' "${1:-}" | sed "s/'/'\\\\''/g")"; }
+
 # a filesystem-safe label for the current checkout
 _label() {
     b=$(_cur 2>/dev/null) || b="detached-$(git rev-parse --short HEAD 2>/dev/null)"
@@ -730,6 +733,10 @@ _gen_commit_message() {
 #   $@: passed through to `git commit`
 cmd_c() {
     stage=''; edit=1; verify='--no-verify'; cc=''; ccval=''
+    # our own flags are picked out wherever they appear and everything else is
+    # passed through in order: `git c -m '...' --cc '...'` is how anyone writes
+    # it, and stopping at the first git argument sent `--cc` to `git commit`
+    rest=''
     while [ $# -gt 0 ]; do
         case $1 in
             -u)       stage=u; shift ;;
@@ -738,10 +745,17 @@ cmd_c() {
             --verify) verify=''; shift ;;
             --cc)     cc=1; shift
                       case ${1:-} in ''|-*) ;; *) ccval=$1; shift ;; esac ;;
-            --)       shift; break ;;
-            *)        break ;;
+            # git's own value-taking options: both parts go through untouched,
+            # so a message that looks like a flag is never mistaken for one
+            -m|--message|-F|--file|-C|--reuse-message|-c|--reedit-message|--trailer|--author|--date)
+                      rest="$rest $(_quote "$1") $(_quote "${2:-}")"; shift 2 ;;
+            --)       shift
+                      while [ $# -gt 0 ]; do rest="$rest $(_quote "$1")"; shift; done ;;
+            *)        rest="$rest $(_quote "$1")"; shift ;;
         esac
     done
+    # shellcheck disable=SC2086  # rebuilt from quoted words, on purpose
+    eval "set -- $rest"
 
     case $stage in
         u)   cmd_u >/dev/null || return 1 ;;

@@ -4,21 +4,34 @@ From "I picked up COM-12345" to "the work is committed". Opening the PR is
 [the next doc](opening-a-pull-request.md).
 
 ```mermaid
-flowchart LR
-    A{branch from} -- the default branch --> B["git dk 12345"]
-    A -- the branch you are on --> C["git uk 12346<br/>(stacked: records a parent)"]
-    B --> D[write code]
-    C --> D
-    D --> E["git f5 · save as you go"]
-    E --> F{chunk finished?}
-    F -- not yet --> D
-    F -- yes --> G["git c · real message"]
-    G --> H{message right?}
-    H -- no --> I[["git um · keep it<br/>git um --regen · rewrite it"]]
-    I --> H
-    H -- yes --> J{more to do?}
-    J -- yes --> D
-    J -- no --> K[open a pull request]
+flowchart TD
+    subgraph one ["branch"]
+        direction LR
+        A{branch from} -- the default branch --> B["git dk 12345"]
+        A -- the branch you are on --> C["git uk 12346<br/>(stacked: records a parent)"]
+        B --> D(["code and save"])
+        C --> D
+    end
+    subgraph two ["code and save"]
+        direction LR
+        E(["you are on the branch"]) --> F[write code]
+        F --> G["git f5 · save as you go"]
+        G --> H{chunk finished?}
+        H -- not yet --> F
+        H -- yes --> I(["commit"])
+    end
+    subgraph three ["commit and open a PR"]
+        direction LR
+        J(["the work is saved"]) --> K["git c · real message"]
+        K --> L{message right?}
+        L -- no --> M[["git um -m 'write it yourself'<br/>git um --regen · let the model try again"]]
+        M --> L
+        L -- yes --> N{more to do?}
+        N -- yes --> O(["back to code and save"])
+        N -- no --> P[open a pull request]
+    end
+    one --> two
+    two --> three
 ```
 
 ## Start the branch
@@ -90,7 +103,8 @@ git c -u           # stage tracked changes only
 git c -y           # skip the editor
 git c -m 'fix(x): by hand'   # no model call
 git c --verify     # run hooks; they're skipped by default
-git c --cc         # Co-Authored-By from at.commit.coauthor, e.g. LLM attribution
+git c --cc         # Co-Authored-By from at.commit.coauthor
+git c --cc 'Claude Opus 5 <noreply@anthropic.com>'   # or name it outright
 ```
 
 ### What the message looks like

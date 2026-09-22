@@ -6,18 +6,26 @@ most of it is optional — every setting you skip costs you one feature, not the
 tool.
 
 ```mermaid
-flowchart LR
-    A[clone this repo] --> B["./install"]
-    B --> C{dependencies ok?}
-    C -- something missing --> D[["install gh, curl, jq,<br/>a model runner"]]
-    D --> C
-    C -- yes --> E[add include.path<br/>to your git config]
-    E --> F[["configure: ticket prefix,<br/>api key, model command"]]
-    F --> G{have a checkout?}
-    G -- no --> H["git cf owner/repo"]
-    G -- yes, one remote --> I[["rename origin to upstream,<br/>add your fork as origin"]]
-    H --> J["git s · git h"]
-    I --> J
+flowchart TD
+    subgraph one ["install"]
+        direction LR
+        A[clone this repo] --> B["./install"]
+        B --> C{dependencies ok?}
+        C -- something missing --> D[["install gh, curl, jq,<br/>a model runner"]]
+        D --> C
+        C -- yes --> E[add include.path<br/>to your git config]
+        E --> F(["configure and clone"])
+    end
+    subgraph two ["configure and clone"]
+        direction LR
+        G(["aliases installed"]) --> H[["ticket prefix · api key<br/>model command"]]
+        H --> I{have a checkout?}
+        I -- no --> J["git cf owner/repo"]
+        I -- yes, one remote --> K[["rename origin to upstream<br/>add your fork as origin"]]
+        J --> L["git s · git h"]
+        K --> L
+    end
+    one --> two
 ```
 
 ## Installing the commands
@@ -89,12 +97,18 @@ Anything that takes a prompt on stdin and prints the answer to stdout. Claude is
 the expected one:
 
 ```sh
-git config --global at.llm.command 'claude -p --model haiku --allowed-tools "" --setting-sources ""'
+git config --global at.llm.command 'claude -p --model haiku --allowed-tools= --setting-sources='
 ```
 
 Those two empty flags matter: `claude -p` is an agent, and with its tools and
 settings loaded it will go and read your repo instead of answering the prompt —
-slower, and sometimes wrong.
+slower, sometimes wrong, and it drags in the project's `.claude/` settings, which is
+where warnings about permission rules come from.
+
+Write them with `=` and nothing after, as above. The `--flag ""` spelling means the
+same thing but only survives if the whole value was single-quoted when you set it;
+double-quote it and the empty strings vanish, leaving `--allowed-tools
+--setting-sources` — which loads everything the flags were there to switch off.
 
 Ollama works the same way, as does anything else meeting that contract:
 

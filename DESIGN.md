@@ -167,7 +167,7 @@ stdin before any other redirection - piping it in loses it.
 
 `claude -p` is itself an agent: with its tools, MCP servers and `CLAUDE.md` loaded it will
 inspect the repo instead of answering the prompt. The suggested command empties both
-(`--allowed-tools "" --setting-sources ""`), which also takes about two seconds off each call.
+(`--allowed-tools= --setting-sources=`), which also takes about two seconds off each call.
 Output cleanup drops `Co-Authored-By`, `issue:` and `Signed-off-by` lines whatever the rules
 say: a model-written attribution would credit work it did not do, and the ticket trailer is
 the caller's to add.

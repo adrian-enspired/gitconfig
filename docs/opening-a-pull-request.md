@@ -4,21 +4,29 @@ Get the branch onto current reality, push it, open the PR, and clean up after it
 lands.
 
 ```mermaid
-flowchart LR
-    A["git dr · sync, then rebase"] --> B{parent stale?}
-    B -- yes --> C[["git dr --restack · fix the ancestors<br/>git dr --no-restack · go ahead anyway"]]
-    C --> D["git oof · force-push with a lease"]
-    B -- no --> D
-    D --> E{ready for review?}
-    E -- yes --> F["git r"]
-    E -- not yet --> G["git rd · draft"]
-    G --> H["git rr · mark it ready"]
-    F --> I[review]
-    H --> I
-    I --> J{approved?}
-    J -- changes asked for --> K[["git c · git dr · git oof"]]
-    K --> I
-    J -- merged --> L[["git ds · git bd · tidy up"]]
+flowchart TD
+    subgraph one ["catch up and push"]
+        direction LR
+        A["git dr · sync, then rebase"] --> B{parent stale?}
+        B -- yes --> C[["git dr --restack · fix the ancestors<br/>git dr --no-restack · go ahead anyway"]]
+        C --> D["git oof · force-push with a lease"]
+        B -- no --> D
+        D --> N(["review and land"])
+    end
+    subgraph two ["review and land"]
+        direction LR
+        E(["branch is pushed"]) --> F{ready for review?}
+        F -- yes --> G["git r"]
+        F -- not yet --> H["git rd · draft"]
+        H --> I["git rr · mark it ready"]
+        G --> J[review]
+        I --> J
+        J --> K{approved?}
+        K -- changes asked for --> L[["git c · git dr · git oof"]]
+        L --> J
+        K -- merged --> M[["git ds · git bd · tidy up"]]
+    end
+    one --> two
 ```
 
 ## Catch up first

@@ -20,10 +20,10 @@ for k in $used; do
 done
 is "$missing" '' 'every setting git-at reads is listed by the installer'
 
-# and nothing is listed that the script never reads. The per-feature model
-# commands are built at runtime (at.llm.${feature}command), so they are named
-# here rather than found by grep.
-built='at.llm.slugcommand at.llm.commitcommand at.llm.prcommand'
+# and nothing is listed that the script never reads, bar the ones read elsewhere:
+# the per-feature model commands are built at runtime (at.llm.${feature}command),
+# and the agent settings are read by the skill and by the installer itself.
+built='at.llm.slugcommand at.llm.commitcommand at.llm.prcommand at.agent.mode at.agent.skilldir'
 stale=''
 for k in $listed; do
     case $k in *'<'*) continue ;; esac
@@ -58,5 +58,23 @@ contains "$out" 'git    ok' 'and the ones that are not'
 
 out=$( (cd "$AT_TMP/cfg" && sh "$installer" --help) 2>&1 )
 contains "$out" 'model' 'the model runner is checked too'
+
+# a model command whose empty values were lost while it was being set: the flags
+# then swallow each other and the runner loads everything they switch off
+git -C "$AT_TMP/cfg" config at.llm.commitcommand 'claude -p --allowed-tools  --setting-sources '
+out=$( (cd "$AT_TMP/cfg" && sh "$installer" --help) 2>&1 )
+contains "$out" 'at.llm.commitcommand: --allowed-tools --setting-sources with no value' \
+    'lost empty values are caught'
+contains "$out" '--allowed-tools= --setting-sources=' 'with the spelling that cannot lose them'
+
+for good in 'claude -p --allowed-tools= --setting-sources=' 'claude -p --allowed-tools "" --setting-sources ""'; do
+    git -C "$AT_TMP/cfg" config at.llm.commitcommand "$good"
+    out=$( (cd "$AT_TMP/cfg" && sh "$installer" --help) 2>&1 )
+    case $out in
+        *WARNING*) not_ok "no warning for: $good" ;;
+        *)         ok "no warning for: $good" ;;
+    esac
+done
+git -C "$AT_TMP/cfg" config --unset at.llm.commitcommand
 
 t_done

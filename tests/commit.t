@@ -144,6 +144,35 @@ at_out nocc c -y --cc >/dev/null
 is "$AT_RC" '1' '--cc with nothing configured stops'
 contains "$AT_OUT" 'at.commit.coauthor' 'and names the setting'
 
+# an attribution given outright beats the configured one - an agent knows which
+# model it is, and the setting may name another
+setup ccval COM-86.thing
+printf 'change\n' >"$AT_TMP/ccval/file"
+git -C "$AT_TMP/ccval" add file
+git -C "$AT_TMP/ccval" config at.commit.coauthor 'Someone Else <else@example.invalid>'
+at_out ccval c -y --cc 'Claude Opus 5 <noreply@anthropic.com>' >/dev/null
+contains "$(trailers ccval)" 'Claude Opus 5' 'an explicit --cc value is used'
+case "$(trailers ccval)" in
+    *else@example*) not_ok 'and the configured one is not' ;;
+    *)              ok 'and the configured one is not' ;;
+esac
+
+# our flags are found wherever they appear, not only before git's own
+setup ccorder COM-87.thing
+printf 'change\n' >"$AT_TMP/ccorder/file"
+git -C "$AT_TMP/ccorder" add file
+at_out ccorder c -m 'fix(x): by hand' --cc 'Claude Opus 5 <noreply@anthropic.com>' -y >/dev/null
+is "$AT_RC" '0' 'flags after -m are still ours'
+is "$(subject ccorder)" 'fix(x): by hand' 'the message is untouched'
+contains "$(trailers ccorder)" 'Claude Opus 5' 'and --cc still applied'
+
+# a message with a quote in it survives the rebuild
+setup quoted COM-88.thing
+printf 'change\n' >"$AT_TMP/quoted/file"
+git -C "$AT_TMP/quoted" add file
+at_out quoted c -y -m "fix(x): it's quoted" >/dev/null
+is "$(subject quoted)" "fix(x): it's quoted" 'quoting survives'
+
 # a commit with no --cc must not carry the trailer
 setup plain COM-83.thing
 printf 'change\n' >"$AT_TMP/plain/file"

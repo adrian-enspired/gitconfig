@@ -4,20 +4,28 @@ Someone else has work in their fork: a branch you want to review, take over, or
 push a fix into. Their fork becomes a remote in your checkout, named after them.
 
 ```mermaid
-flowchart LR
-    A["git madd alice · add their fork"] --> B["git b -r alice · find the branch"]
-    B --> C["git bk rebuild -r alice · check it out"]
-    C --> D[["git fb · git fk · git ll<br/>read what they did"]]
-    D --> E{changes to suggest?}
-    E -- no --> F[say so and move on]
-    E -- yes --> G["git c · commit on their branch"]
-    G --> H{how should they get it?}
-    H -- default, no access needed --> I["git o · git r<br/>PR into their branch"]
-    H -- you have write access --> J[["git push alice HEAD:you/branch<br/>then git r"]]
-    H -- they asked you to --> K[["git push alice HEAD:their-branch<br/>no review step"]]
-    I --> L[they merge it]
-    J --> L
-    K --> M[their branch moves]
+flowchart TD
+    subgraph one ["find and read their work"]
+        direction LR
+        A["git madd alice · add their fork"] --> B["git b -r alice · find the branch"]
+        B --> C["git bk rebuild -r alice · check it out"]
+        C --> D[["git fb · git fk · git ll<br/>read what they did"]]
+        D --> E{changes to suggest?}
+        E -- no --> F[say so and move on]
+        E -- yes --> G(["hand it back"])
+    end
+    subgraph two ["hand it back"]
+        direction LR
+        H(["you have changes to suggest"]) --> I["git c · commit on their branch"]
+        I --> J{how should they get it?}
+        J -- default, no access needed --> K["git o · git r<br/>PR into their branch"]
+        J -- you have write access --> L[["git push alice HEAD:you/branch<br/>then git r"]]
+        J -- they asked you to --> M[["git push alice HEAD:their-branch<br/>no review step"]]
+        K --> N[they merge it]
+        L --> N
+        M --> O[their branch moves]
+    end
+    one --> two
 ```
 
 ## Add their fork
