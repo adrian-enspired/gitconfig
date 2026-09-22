@@ -2,9 +2,6 @@
 #
 # @author adrian-enspired
 # @license MIT
-#
-# Install:
-#   mkdir -p ~/.config/git && cp git-at ~/.config/git/git-at && chmod +x ~/.config/git/git-at
 
 set -u
 
@@ -13,7 +10,7 @@ set -u
 _die()  { printf '%s\n' "$*" >&2; exit 1; }
 _warn() { printf '%s\n' "$*" >&2; }
 _need() {
-    command -v "$1" >/dev/null 2>&1 || _die "cannot continue: \`$1\` is not available"
+    command -v "$1" >/dev/null 2>&1 || _die "ERROR: \`$1\` is not available"
 }
 _confirm() {
     printf '%s' "$1"
@@ -36,10 +33,8 @@ _label() {
 
 # ------------------------------------------------------------- discovery ----
 
-# the remote this checkout belongs to: `origin` when there is one, else
-# `upstream` - a clone taken straight from the authoritative repo has no origin -
-# else whichever single remote exists. Everything that used to say `origin`
-# outright asks this instead, so an upstream-only clone works like any other.
+# the remote this checkout belongs to: 
+# `origin` when there is one, else `upstream`, else whichever single remote exists.
 _main_remote() {
     for r in origin upstream; do
         git remote get-url "$r" >/dev/null 2>&1 && { printf '%s\n' "$r"; return 0; }
@@ -83,7 +78,7 @@ _repo_name() {
 }
 
 _require_github() {
-    [ "$(cmd_oh)" = "github.com" ] || _die "the main remote is not on github"
+    [ "$(cmd_oh)" = "github.com" ] || _die "remote is not on github"
     _need gh
 }
 
@@ -99,9 +94,8 @@ _resolve_ref() {
     printf '%s\n' "$r"
 }
 
-# what the diff and patch commands compare against: the branch point with no
-# argument, or where HEAD diverged from the ref given. Same loud failures as
-# every other branch point lookup - a wrong range here is a wrong patch.
+# what the diff and patch commands compare against: 
+# the branch point with no argument, or where HEAD diverged from the ref given.
 #   $1: ref (commit-ish) or branch name pattern (optional)
 _base_ref() {
     if [ -z "${1:-}" ]; then
@@ -129,8 +123,8 @@ cmd_i() {
 
 # ------------------------------------------------------------- settings ----
 #
-# Every setting is `at.<area>.<key>` in git config, overridable per call site by
-# the matching AT_* environment variable.
+# Every setting is `at.<area>.<key>` in git config,
+# overridable per call site by the matching AT_* environment variable.
 
 # $1: config key   $2: environment variable   $3: default
 _cfg() {
@@ -142,28 +136,21 @@ _cfg() {
 
 # ------------------------------------------------------------------ llm ----
 #
-# One contract for every backend: prompt on stdin, text on stdout. Which command
-# provides it is configuration, so a new backend costs no code. Nothing here is
-# load-bearing - a missing, slow or broken model degrades to the non-model path.
+# One contract for every backend: prompt on stdin, text on stdout.
+# A missing, slow or broken model degrades to the non-model path.
 
-# where the prompt files live (alongside the script unless configured otherwise)
+# where the prompt files live
 _rules() {
     dir=$(_cfg at.llm.rules AT_LLM_RULES "$(dirname "$0")/rules")
     printf '%s/%s.md\n' "$dir" "$1"
 }
 
 # run a command with a time limit, since macOS ships no timeout(1)
-#
-# The prompt arrives as a file rather than on our stdin because a background job
-# has its stdin redirected from /dev/null before anything else happens, so a
-# piped prompt never reaches the model.
 #   $1: seconds   $2: file to feed the command on stdin   rest: command
 _with_timeout() {
     secs=$1; input=$2; shift 2
     "$@" <"$input" &
     job=$!
-    # the guard must not hold the caller's stdout: a command substitution waits
-    # for every process on the pipe, which would make every call take $secs
     (sleep "$secs"; kill -TERM "$job" 2>/dev/null) >/dev/null 2>&1 &
     guard=$!
     wait "$job"; rc=$?
@@ -171,9 +158,7 @@ _with_timeout() {
     return $rc
 }
 
-# Models wrap answers in fences, announce what they are about to do, and add
-# trailers however firmly the rules say not to - a model-written `Co-Authored-By`
-# would credit work it did not do, and the ticket trailer is the caller's to add.
+# Models don't always follow directions; strip fences and trailers
 _llm_clean() {
     sed -E '/^[[:space:]]*```/d; /^[[:space:]]*(Co-[Aa]uthored-[Bb]y|issue|Signed-off-by):/Id' |
         awk 'NF {seen=1} seen' |
@@ -183,7 +168,7 @@ _llm_clean() {
 }
 
 # ask the configured model; prompt on stdin, text on stdout.
-# returns non-zero whenever the caller should fall back to its own behaviour.
+# non-zero return means the caller should gracefully degrade.
 #   $1: feature (slug | commit | pr)
 _llm() {
     feat=$1
@@ -197,19 +182,17 @@ _llm() {
     cat >"$prompt"
     out=$(_with_timeout "$secs" "$prompt" sh -c "$cmd" | _llm_clean) || out=''
     rm -f "$prompt"
-    [ -n "$out" ] || { _warn "the $feat model returned nothing - carrying on without it"; return 1; }
+    [ -n "$out" ] || { _warn "the $feat model returned nothing"; return 1; }
     printf '%s\n' "$out"
 }
 
 # -------------------------------------------------------------- tickets ----
 #
-# Branches are named `<KEY>.<slug>`. `<KEY>-<slug>` is recognised because older
-# branches use it, but never produced.
+# Branches are named `<KEY>.<slug>`. 
+# `<KEY>-<slug>` is recognised because older branches use it, but never produced.
 #
-# Keys whose prefix is listed in `at.ticket.ignored-prefixes` belong to some other
-# tracker - a retired one, or one git-at does not talk to. They are recognised,
-# linked and carried in trailers, but never looked up or transitioned. Nothing is
-# ignored until the list says so.
+# Keys listed in `at.ticket.ignored-prefixes` belong to some other tracker - retired, or one we can't talk to. 
+# They are recognised, linked and carried in trailers, but never looked up or transitioned.
 
 # prefixes to treat as another tracker's, one per line
 _ignored_prefixes() {
@@ -218,7 +201,7 @@ _ignored_prefixes() {
     printf '%s' "$v" | tr ',' ' ' | tr ' ' '\n' | grep . || true
 }
 
-# is this key another tracker's?
+# is this key's tracker unsupported?
 _is_ignored_key() {
     key=$(_upper "$1")
     for p in $(_ignored_prefixes); do
@@ -237,7 +220,7 @@ _ticket_key() {
         '') return 1 ;;
         *[!0-9]*) ;;
         *) p=$(_cfg at.ticket.prefix AT_TPREFIX)
-           [ -n "$p" ] || _die "'$1' is a bare number and no ticket prefix is set (at.ticket.prefix)"
+           [ -n "$p" ] || _die "no ticket prefix is set for '$1'"
            printf '%s-%s\n' "$(_upper "$p")" "$1"
            return 0 ;;
     esac
@@ -260,8 +243,7 @@ _word_count() {
     printf '%s' "$1" | tr '-' '\n' | grep -c .
 }
 
-# POST a graphql body to linear; prints the response. no model involved: a tracker
-# call has a fixed shape, so it costs nothing to make it deterministic.
+# POST a graphql body to linear; prints the response.
 _linear_post() {
     api=$(_cfg at.linear.apikey AT_LINEAR_APIKEY)
     [ -n "$api" ] || return 1
@@ -283,17 +265,8 @@ _linear_title() {
     printf '%s\n' "$t"
 }
 
-# move a ticket to a named workflow state. two calls: the state ids belong to the
-# issue's own team, so they have to be read before anything can be set.
+# move a ticket to a named workflow state.
 #   $1: ticket key   $2: state name
-# the statuses this ticket's team offers, one per line
-_linear_states() {
-    # shellcheck disable=SC2016  # graphql variables
-    body='{"query":"query($id:String!){issue(id:$id){id team{states{nodes{id name}}}}}","variables":{"id":"'"$1"'"}}'
-    r=$(_linear_post "$body") || return 1
-    printf '%s' "$r" | jq -r '.data.issue.team.states.nodes[]?.name' 2>/dev/null | grep . || return 1
-}
-
 _linear_move() {
     _is_ignored_key "$1" && return 1
     # shellcheck disable=SC2016  # graphql variables
@@ -310,8 +283,16 @@ _linear_move() {
     printf '%s' "$out" | jq -e '.data.issueUpdate.success == true' >/dev/null 2>&1
 }
 
+# the statuses this ticket's team offers, one per line
+_linear_states() {
+    # shellcheck disable=SC2016  # graphql variables
+    body='{"query":"query($id:String!){issue(id:$id){id team{states{nodes{id name}}}}}","variables":{"id":"'"$1"'"}}'
+    r=$(_linear_post "$body") || return 1
+    printf '%s' "$r" | jq -r '.data.issue.team.states.nodes[]?.name' 2>/dev/null | grep . || return 1
+}
+
 # move the branch's ticket to the status configured for a command, if any.
-# never fatal: a tracker that is unreachable must not stop local work.
+# never fatal.
 #   $1: command name   $2: branch (defaults to the current one)
 _ticket_move() {
     want=$(_cfg "at.status.$1" "AT_STATUS_$(_upper "$1")")
@@ -319,14 +300,11 @@ _ticket_move() {
     key=$(cmd_i "${2:-}") || return 0
     [ -n "$key" ] || return 0
     _is_ignored_key "$key" && return 0
-    _linear_move "$key" "$want" || _warn "could not move $key to '$want' - carrying on"
+    _linear_move "$key" "$want" || _warn "could not move $key to '$want'"
     return 0
 }
 
-# move a ticket to a status
-#
-# Unlike the transitions the other commands make on their way past, this one was
-# asked for: it says what went wrong rather than warning and carrying on.
+# move a ticket to a status.
 #   $1: ticket key, or just the number (at.ticket.prefix supplies the rest).
 #       with one argument, the branch's own ticket.
 #   $2: the status to move it to
@@ -353,7 +331,6 @@ cmd_it() {
         printf '%s -> %s\n' "$key" "$want"
         return 0
     fi
-    # the usual cause is a status this team does not have, so say which it does
     states=$(_linear_states "$key") || _die "could not reach linear, or $key does not exist"
     printf '%s\n' "$states" | grep -qix "$want" &&
         _die "linear refused to move $key to '$want'"
@@ -380,7 +357,7 @@ _ticket_slug() {
     fi
 }
 
-# the branch name for `dk` / `uk` arguments
+# the branch name
 #   $1: ticket, slug, or complete branch name   $2: slug (optional)
 _branch_name() {
     [ -n "${1:-}" ] || _die 'usage: <ticket>[ <slug>] | <slug> | <ticket>.<slug>'
@@ -407,12 +384,8 @@ cmd__branch_name() { _branch_name "$@"; }
 
 # ---------------------------------------------------------- branch point ----
 #
-# Where a branch's own work begins. Recorded per branch rather than derived,
-# because a merge base stops being the answer the moment the parent branch is
-# squash-merged: see docs/adr/0001-tracked-branch-point.md.
-#
-# Resolution never degrades silently - an unusable explicit or recorded value
-# stops the command instead of falling through to the next source.
+# Where a branch's own work begins. 
+# Recorded per branch, not derived; merge-base is wrong if the parent branch is squash-merged.
 
 _is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
 
@@ -430,9 +403,7 @@ _branch_point() {
 
     rec=$(git config --get "branch.$b.atbase" 2>/dev/null) || rec=''
     if [ -n "$rec" ]; then
-        # a rebase the user finished by hand never returns to `dr`, leaving the
-        # record behind. the value dr parked is an ancestor only once that rebase
-        # completed, which makes it the newer of the two whenever it fits.
+        # a rebase the user finished by hand never returns to `dr`, leaving the record behind.
         pend=$(git config --get "branch.$b.atbasepending" 2>/dev/null) || pend=''
         if [ -n "$pend" ]; then
             p=$(_commit_of "$pend") || p=''
@@ -453,16 +424,14 @@ _branch_point() {
 
     d=$(cmd_d) || return 1
     mb=$(git merge-base "$d" "$b" 2>/dev/null) ||
-        _die "'$d' and '$b' share no history, so where '$b' begins cannot be worked out - record it with \`git config branch.$b.atbase <commit>\`, or name it on the command line"
+        _die "'$d' and '$b' share no history, so where '$b' begins cannot be found - record it with \`git config branch.$b.atbase <commit>\`, or name it on the command line"
     printf 'merge-base %s\n' "$mb"
 }
 
 # is this commit's change already present in $2 (default: the default branch)?
 #
-# Tested against a temporary index holding $2's tree, so the working tree and the
-# real index are untouched. This is the only thing that sees through a squash
-# merge; rebase's own already-applied check matches patch-ids, which a squash
-# destroys.
+# Tested against a temporary index holding $2's tree so the working tree and the real index are untouched.
+# This is the only thing that sees through a squash merge.
 #   $1: commit   $2: ref to test against (defaults to the default branch)
 _already_landed() {
     c=$(_commit_of "$1") || return 1
@@ -526,7 +495,7 @@ cmd_b() {
     if [ -n "$remote" ]; then
         git remote get-url "$remote" >/dev/null 2>&1 || _die "no such remote: $remote"
         git fetch "$remote" --prune >/dev/null 2>&1 ||
-            _warn "fetch from '$remote' failed - listing what is already here"
+            _warn "fetch from '$remote' failed - list may be incomplete"
         scope="remotes/$remote"
     fi
 
@@ -538,7 +507,7 @@ cmd_b() {
         _b_drop_head "$remote" | _b_match "$pattern"
 }
 
-# a remote's HEAD is a symref, not a branch anyone wants listed
+# a remote's HEAD is a symref, not a branch
 _b_drop_head() {
     if [ -n "$1" ]; then grep -v '/HEAD$' || true; else cat; fi
 }
@@ -551,14 +520,11 @@ _b_match() {
 #   $1: "-y" = skip confirmation
 cmd_bd() {
     d=$(cmd_d); cur=$(_cur || true)
-    # what has landed is only knowable once the default branch is current, so
-    # sync first. `ds` leaves you on the default branch; come back, because the
-    # branch you were on is never a candidate and must not become one.
+    # sync first.
     cmd_ds || { [ -n "$cur" ] && git switch -q "$cur"; _die 'sync failed - nothing deleted'; }
     [ -n "$cur" ] && { git switch -q "$cur" || _die "cannot return to $cur"; }
     ref=$d
-    # judged by content, not by ancestry: `git branch --merged` never sees a
-    # squash-merged branch, and squash is how the team's PRs land.
+    # judged by content, not by ancestry: `git branch --merged` never sees a squash-merged branch.
     m=''
     for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do
         [ "$b" = "$d" ] || [ "$b" = "$cur" ] && continue
@@ -591,9 +557,7 @@ cmd_bdf() {
     fi
 }
 
-# record where a remote branch started. the PR's base branch is the only place
-# that fact survives for a stacked branch, so ask `gh` for it before falling back
-# to the default branch.
+# record where a remote branch started.
 #   $1: local branch   $2: remote-tracking branch (remote/name)
 _record_remote_base() {
     l=$1; r=$2
@@ -606,7 +570,7 @@ _record_remote_base() {
     [ "$base" = "$d" ] && base=''
     ref=$d
     if [ -n "$base" ]; then
-        # only a local parent can be restacked onto; a remote-only one still dates the base
+        # only a local parent can be restacked onto
         git show-ref --verify --quiet "refs/heads/$base" && git config "branch.$l.atparent" "$base"
         for cand in "$base" "$remote/$base"; do
             git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1 && { ref=$cand; break; }
@@ -618,9 +582,8 @@ _record_remote_base() {
 
 # ------------------------------------------------------------- checkout ----
 
-# check out a branch by name or pattern
-#   $1: pattern; an exact local branch name always wins over a substring match.
-#       with no pattern, the default branch.
+# check out a branch by name or pattern; the default branch if pattern is omitted.
+#   $1: pattern; an exact local branch name wins over a match
 #   -r <remote>: check out that remote's branch, tracking it as `r/<remote>/<name>`
 cmd_bk() {
     remote=''; pattern=''
@@ -691,8 +654,7 @@ cmd_uk() {
 
 # ------------------------------------------------------ commit / staging ----
 
-# the scopes this repo already uses, so a generated one joins the vocabulary
-# rather than inventing a synonym for it
+# the scopes this repo already uses
 _scopes() {
     git log -n 200 --format='%s' 2>/dev/null |
         sed -nE 's/^[a-z]+\(([^)]+)\).*/\1/p' | sort | uniq -c | sort -rn |
@@ -730,9 +692,7 @@ _gen_commit_message() {
 #   $@: passed through to `git commit`
 cmd_c() {
     stage=''; edit=1; verify='--no-verify'; cc=''; ccval=''
-    # our own flags are picked out wherever they appear and everything else is
-    # passed through in order: `git c -m '...' --cc '...'` is how anyone writes
-    # it, and stopping at the first git argument sent `--cc` to `git commit`
+    # pick out our own flags wherever they appear and pass everything else through in order
     rest=''
     while [ $# -gt 0 ]; do
         case $1 in
@@ -742,8 +702,8 @@ cmd_c() {
             --verify) verify=''; shift ;;
             --cc)     cc=1; shift
                       case ${1:-} in ''|-*) ;; *) ccval=$1; shift ;; esac ;;
-            # git's own value-taking options: both parts go through untouched,
-            # so a message that looks like a flag is never mistaken for one
+            # git's own value-taking options: 
+            # both parts go through untouched, so a message that looks like a flag is never mistaken for one
             -m|--message|-F|--file|-C|--reuse-message|-c|--reedit-message|--trailer|--author|--date)
                       rest="$rest $(_quote "$1") $(_quote "${2:-}")"; shift 2 ;;
             --)       shift
@@ -751,7 +711,7 @@ cmd_c() {
             *)        rest="$rest $(_quote "$1")"; shift ;;
         esac
     done
-    # shellcheck disable=SC2086  # rebuilt from quoted words, on purpose
+    # shellcheck disable=SC2086  # rebuilt from quoted words on purpose
     eval "set -- $rest"
 
     case $stage in
@@ -759,7 +719,7 @@ cmd_c() {
         all) cmd_all || return 1 ;;
     esac
 
-    # a quicksave is scaffolding: committing on top of one replaces it outright
+    # a quicksave is temporary: committing on top of one replaces it
     amend=''
     case " $* " in
         *' --amend '*) amend='given' ;;
@@ -780,7 +740,7 @@ cmd_c() {
         msg=$(mktemp "${TMPDIR:-/tmp}/git-at-msg.XXXXXX") || return 1
         if ! _gen_commit_message "$msg" "$([ -n "$amend" ] && printf amend)"; then
             rm -f "$msg"
-            [ -n "$edit" ] || _die 'no message given and none could be generated - use -m, or configure at.llm.command'
+            [ -n "$edit" ] || _die 'no message given and none generated - use -m, or configure at.llm.command'
             msg=''
         fi
     fi
@@ -814,7 +774,7 @@ cmd_all() {
     git add --all && git status
 }
 
-# amend the last commit, keeping its message
+# amend the last commit
 #   -u | --all: stage tracked | everything first
 #   --regen: write a new message from the amended diff instead of keeping it
 #   $@: passed through to `git commit`
@@ -835,7 +795,6 @@ cmd_um() {
 }
 
 # quicksave: everything in the tree, into a rolling `working` commit
-# Returns 0 when there was nothing to save, so it chains safely.
 cmd_f5() {
     d=$(cmd_d)
     cur=$(_cur || true)
@@ -850,11 +809,6 @@ cmd_f5() {
 }
 
 # create an annotated tag, refusing a name already in use
-#
-# Tags are one shared namespace with no fast-forward rule to fall back on, so a
-# name taken on a remote is a problem to find now rather than at push time.
-# Checked with `ls-remote`, which reads every remote without touching local refs -
-# fetching tags instead would prune from one remote what only exists on another.
 #   -f | --force: skip the checks and replace what is there
 #   $1: tag name   $2: message (defaults to the name)
 cmd_t() {
@@ -924,9 +878,6 @@ _sync_fork() {
 }
 
 # sync the default branch: from upstream first when the repo is a fork
-#
-# Reports every step. A sync that prints nothing on success leaves you guessing
-# whether it did anything, and swallowed stderr leaves you guessing why not.
 #   -y: overwrite a diverged origin, and reset a diverged local branch, unasked
 #   exits 3 when local is current but the fork could not be updated
 cmd_ds() {
@@ -938,22 +889,19 @@ cmd_ds() {
         return 0
     }
 
-    # a fork has both: work is pushed to one and taken from the other. A clone
-    # straight from the authoritative repo has only the one, and just follows it.
+    # a fork has both: work is pushed to one and taken from the other. 
+    # A clone straight from the authoritative repo has only the one, and just follows it.
     src=$m
     forkfail=''
     if [ "$m" != upstream ] && git remote get-url upstream >/dev/null 2>&1; then
         # the local default branch follows upstream, the authoritative copy.
-        # Keeping the fork's copy level is a courtesy that can fail - gh refusing
-        # workflow changes, say - and local work must not stall when it does.
         src=upstream
         for r in "$m" upstream; do
             git fetch -q "$r" --prune ||
                 _warn "fetch from '$r' failed - working from what is already here"
         done
         # the fork's default branch is meant to be strictly downstream of upstream.
-        # anything on it that upstream lacks is about to be thrown away, and a
-        # forced sync is not the place to find that out afterwards.
+        # anything on it that upstream lacks is about to be thrown away.
         extra=$(git rev-list "refs/remotes/upstream/$d..refs/remotes/$m/$d" 2>/dev/null) || extra=''
         if [ -n "$extra" ] && [ -z "$yes" ]; then
             _warn "$m/$d has commits upstream does not:"
@@ -999,9 +947,6 @@ cmd_ds() {
         git reset -q --hard "refs/remotes/$src/$d"
         printf '%s: reset to %s\n' "$d" "$(git rev-parse --short "$d")"
     fi
-
-    # both halves of the job are the job: a fork left behind upstream is a failed
-    # sync, however current the local branch is. 3 says which half.
     if [ -n "$forkfail" ]; then
         _warn "$m/$d is behind upstream - $d is current, but the sync did not finish"
         return 3
@@ -1009,8 +954,8 @@ cmd_ds() {
     return 0
 }
 
-# what this branch should be rebased onto: its parent while the parent is open,
-# the default branch once the parent has landed. prints the ref.
+# what this branch should be rebased onto: 
+# its parent while the parent is open, the default branch once the parent has landed.
 #   $1: branch   $2: default branch   $3: recorded branch point   $4: restack choice
 _dr_target() {
     b=$1; d=$2; base=$3; choice=$4
@@ -1047,8 +992,7 @@ _dr_target() {
     printf '%s\n' "$parent"
 }
 
-# stop before replaying work that is already in the default branch: a squashed
-# parent looks like the branch's own commits from a merge base's point of view.
+# stop before replaying work that is already in the default branch.
 #   $1: base   $2: branch   $3: default branch
 _skip_landed() {
     base=$1; b=$2; onto=$3
@@ -1061,9 +1005,7 @@ _skip_landed() {
     [ "$n" -gt 0 ] &&
         _warn "$n commit(s) at the start of this branch are already on $onto - replaying from $(git rev-parse --short "$base")"
 
-    # landed work *after* work that has not landed is a different animal: a
-    # cherry-pick, or a range that was never contiguous. rebase will drop or
-    # conflict on it, and either way the user should know it is there.
+    # landed work *after* work that has not landed is different
     for c in $(git rev-list --reverse "$base..$b"); do
         _already_landed "$c" "$onto" &&
             _warn "note: $(git log -1 --format='%h %s' "$c") is on $onto too, but comes after work that is not"
@@ -1107,8 +1049,8 @@ cmd_dr() {
     [ "$tip" = "$(_commit_of "$b")" ] &&
         { printf '%s: already on %s (%s)\n' "$b" "$onto" "$was"; return 0; }
 
-    # nothing of its own left - every commit landed, or there never were any.
-    # The rebase still has work to do: it moves the branch up to the target.
+    # every commit landed, or there never were any.
+    # The rebase still has to move the branch up to the target.
     n=$(git rev-list --count "$base..$b")
     if [ "$n" -eq 0 ]; then
         _warn "$b has nothing of its own left - moving it to $onto"
@@ -1116,7 +1058,7 @@ cmd_dr() {
         _warn "replaying $n commit(s) onto $onto"
     fi
 
-    # parked for the resolver: a rebase finished by hand never comes back here
+    # a rebase finished by hand never comes back here
     git config "branch.$b.atbasepending" "$tip"
     git rebase --onto "$onto" "$base" "$b" || return 1
     git config "branch.$b.atbase" "$tip"
