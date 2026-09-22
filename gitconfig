@@ -50,7 +50,7 @@
 	autocorrect = prompt
 
 [at "ticket"]
-	# default ticket prefix for a bare number: `git dk 12345` -> COM-12345
+	# default ticket prefix for a bare number: `git dk 12345` -> AT-12345
 	# override per call with AT_TPREFIX=
 	prefix =
 	# prefixes belonging to another tracker - a retired one, or one git-at does

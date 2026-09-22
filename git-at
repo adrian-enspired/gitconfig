@@ -551,15 +551,12 @@ _b_match() {
 #   $1: "-y" = skip confirmation
 cmd_bd() {
     d=$(cmd_d); cur=$(_cur || true)
-    # judge "merged" against the remote's copy of the default branch when we have it
-    m=$(_main_remote) || m=''
-    if [ -n "$m" ] && git show-ref --verify --quiet "refs/remotes/$m/$d"; then
-        ref="$m/$d"
-    elif git show-ref --verify --quiet "refs/heads/$d"; then
-        ref=$d
-    else
-        _die "no local or remote ref for '$d' - run \`git ds\` first"
-    fi
+    # what has landed is only knowable once the default branch is current, so
+    # sync first. `ds` leaves you on the default branch; come back, because the
+    # branch you were on is never a candidate and must not become one.
+    cmd_ds || { [ -n "$cur" ] && git switch -q "$cur"; _die 'sync failed - nothing deleted'; }
+    [ -n "$cur" ] && { git switch -q "$cur" || _die "cannot return to $cur"; }
+    ref=$d
     # judged by content, not by ancestry: `git branch --merged` never sees a
     # squash-merged branch, and squash is how the team's PRs land.
     m=''
@@ -666,7 +663,7 @@ cmd_bk() {
 #   $1: new branch name
 cmd_dk() {
     n=$(_branch_name "$@") || return 1
-    cmd_ds >/dev/null || return 1
+    cmd_ds || _die 'sync failed - no branch created'
     d=$(cmd_d) || return 1
     git switch -q -c "$n" "$d" || return 1
     git config "branch.$n.atbase" "$(_commit_of "$d")"
@@ -915,13 +912,15 @@ cmd_s() {
 _sync_fork() {
     d=$1; m=$2
     if [ "$(cmd_oh 2>/dev/null)" = github.com ] && command -v gh >/dev/null 2>&1; then
-        gh repo sync --force "$(cmd_oor)"
-    else
-        # --force to match what `gh repo sync --force` does: origin's default
-        # branch is meant to be a copy of upstream's, not a place to commit
-        git fetch upstream --prune &&
-            git push --force "$m" "refs/remotes/upstream/$d:refs/heads/$d"
+        out=$(gh repo sync --force "$(cmd_oor)" 2>&1) && return 0
+        # gh syncs with an OAuth token, which needs the `workflow` scope to carry
+        # changes to .github/workflows. A push over the remote's own transport
+        # has no such scope to lack, so try that before giving up.
+        printf 'gh repo sync refused, pushing with git instead:\n%s\n' "$out" | sed '2,$s/^/  /'
     fi
+    # --force to match what `gh repo sync --force` does: the fork's default branch
+    # is meant to be a copy of upstream's, not a place to commit
+    git push --force "$m" "refs/remotes/upstream/$d:refs/heads/$d"
 }
 
 # sync the default branch: from upstream first when the repo is a fork
@@ -929,6 +928,7 @@ _sync_fork() {
 # Reports every step. A sync that prints nothing on success leaves you guessing
 # whether it did anything, and swallowed stderr leaves you guessing why not.
 #   -y: overwrite a diverged origin, and reset a diverged local branch, unasked
+#   exits 3 when local is current but the fork could not be updated
 cmd_ds() {
     yes=''
     case ${1:-} in -y|--yes) yes=1 ;; esac
@@ -940,7 +940,13 @@ cmd_ds() {
 
     # a fork has both: work is pushed to one and taken from the other. A clone
     # straight from the authoritative repo has only the one, and just follows it.
+    src=$m
+    forkfail=''
     if [ "$m" != upstream ] && git remote get-url upstream >/dev/null 2>&1; then
+        # the local default branch follows upstream, the authoritative copy.
+        # Keeping the fork's copy level is a courtesy that can fail - gh refusing
+        # workflow changes, say - and local work must not stall when it does.
+        src=upstream
         for r in "$m" upstream; do
             git fetch -q "$r" --prune ||
                 _warn "fetch from '$r' failed - working from what is already here"
@@ -956,6 +962,7 @@ cmd_ds() {
         fi
         was=$(git rev-parse --short "refs/remotes/$m/$d" 2>/dev/null) || was='?'
         if out=$(_sync_fork "$d" "$m" 2>&1); then
+            [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/  /' >&2
             git fetch -q "$m" --prune || true
             now=$(git rev-parse --short "refs/remotes/$m/$d" 2>/dev/null) || now='?'
             if [ "$was" = "$now" ]; then
@@ -964,7 +971,8 @@ cmd_ds() {
                 printf '%s/%s: %s -> %s, from upstream\n' "$m" "$d" "$was" "$now"
             fi
         else
-            _warn "syncing $m/$d from upstream failed - carrying on with $m as it is:"
+            forkfail=1
+            _warn "could not update $m/$d from upstream:"
             printf '%s\n' "$out" | sed 's/^/  /' >&2
         fi
     else
@@ -976,22 +984,29 @@ cmd_ds() {
     before=$(git rev-parse --short "$d")
     # --ff-only is authoritative here regardless of pull.rebase: a diverged local
     # default branch is a thing to look at, not to silently rebase away
-    if git merge-base --is-ancestor "$d" "refs/remotes/$m/$d" 2>/dev/null; then
-        git merge -q --ff-only "refs/remotes/$m/$d" || return 1
+    if git merge-base --is-ancestor "$d" "refs/remotes/$src/$d" 2>/dev/null; then
+        git merge -q --ff-only "refs/remotes/$src/$d" || return 1
         after=$(git rev-parse --short "$d")
         if [ "$before" = "$after" ]; then
-            printf '%s: already up to date (%s)\n' "$d" "$after"
+            printf '%s: already up to date with %s (%s)\n' "$d" "$src" "$after"
         else
-            printf '%s: %s -> %s\n' "$d" "$before" "$after"
+            printf '%s: %s -> %s, from %s\n' "$d" "$before" "$after" "$src"
         fi
-        return 0
+    else
+        _warn "local $d has diverged from $src/$d:"
+        git log --oneline "refs/remotes/$src/$d..$d" >&2
+        [ -n "$yes" ] || _confirm "reset $d to $src/$d? [y/N] " || return 1
+        git reset -q --hard "refs/remotes/$src/$d"
+        printf '%s: reset to %s\n' "$d" "$(git rev-parse --short "$d")"
     fi
 
-    _warn "local $d has diverged from $m/$d:"
-    git log --oneline "refs/remotes/$m/$d..$d" >&2
-    [ -n "$yes" ] || _confirm "reset $d to $m/$d? [y/N] " || return 1
-    git reset -q --hard "refs/remotes/$m/$d"
-    printf '%s: reset to %s\n' "$d" "$(git rev-parse --short "$d")"
+    # both halves of the job are the job: a fork left behind upstream is a failed
+    # sync, however current the local branch is. 3 says which half.
+    if [ -n "$forkfail" ]; then
+        _warn "$m/$d is behind upstream - $d is current, but the sync did not finish"
+        return 3
+    fi
+    return 0
 }
 
 # what this branch should be rebased onto: its parent while the parent is open,

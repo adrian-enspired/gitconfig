@@ -41,7 +41,7 @@ One command, several decisions:
 master: 9f4063c -> f79b80c
 branch point: recorded 9f4063c
 replaying 2 commit(s) onto master
-COM-12345.rebuild-window: 06758ec -> a1b2c3d
+AT-12345.rebuild-window: 06758ec -> a1b2c3d
 ```
 
 - Syncs the default branch (from `upstream` first when you have a fork) and says
@@ -89,8 +89,8 @@ git rd             # …as a draft
 
 What it builds:
 
-- **Title** from the branch name: `COM-12345.rebuild-window` →
-  `[COM-12345] Rebuild Window`. No model call.
+- **Title** from the branch name: `AT-12345.rebuild-window` →
+  `[AT-12345] Rebuild Window`. No model call.
 - **Body** from git — ticket links, `issue:` trailers, a co-author trailer copied
   from your commits, a test-plan pointer — with the model writing only Why, What,
   Blast radius and the reading guide. `rules/pr.md` is that prompt.

@@ -86,7 +86,7 @@ never their value, so the output is safe to paste into a bug report.
 
 | Setting | Without it |
 | --- | --- |
-| `at.ticket.prefix` | `git dk 12345` can't build a key; pass `COM-12345` |
+| `at.ticket.prefix` | `git dk 12345` can't build a key; pass `AT-12345` |
 | `at.linear.apikey` | no ticket titles, no status transitions |
 | `at.linear.workspace` | ticket links in PR bodies are bare keys |
 | `at.llm.command` | `git c` needs `-m`; slugs come from the first four words of the title |

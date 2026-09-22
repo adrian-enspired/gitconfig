@@ -57,7 +57,7 @@ git b -i -r alice           # with author dates, so you can see what's recent
 git bk rebuild -r alice
 ```
 
-Creates a local branch `r/alice/COM-12345.rebuild-window` tracking theirs, and
+Creates a local branch `r/alice/AT-12345.rebuild-window` tracking theirs, and
 records where their work began — asking `gh` for the PR's base branch when there
 is one, so a stacked branch of theirs is understood as stacked.
 
@@ -101,7 +101,7 @@ git r     # the PR goes to alice's repo, against the branch you checked out
 `r` works that out from the tracking ref `bk -r` set up, and says so:
 
 ```
-opening a PR against COM-12345.rebuild-window on alice/gitconfig (this branch tracks alice)
+opening a PR against AT-12345.rebuild-window on alice/gitconfig (this branch tracks alice)
 ```
 
 `--repo` and `--base` override it when that guess is wrong.
@@ -116,12 +116,12 @@ If they've made you a collaborator and prefer the work sitting on their fork,
 push under a name that says whose it is:
 
 ```sh
-git push alice HEAD:you/COM-12345.rebuild-window
+git push alice HEAD:you/AT-12345.rebuild-window
 git r
 ```
 
 The explicit refspec matters. Your local branch is called
-`r/alice/COM-12345.rebuild-window`, and with `push.default = current` a bare
+`r/alice/AT-12345.rebuild-window`, and with `push.default = current` a bare
 `git push alice HEAD` pushes under *that* name — which reads as "alice's copy of
 alice's branch" on her fork, and tells nobody it's yours.
 
@@ -131,7 +131,7 @@ When they've asked for it — pairing, or "fix the test on my branch" — say so
 outright:
 
 ```sh
-git push alice HEAD:COM-12345.rebuild-window
+git push alice HEAD:AT-12345.rebuild-window
 ```
 
 Their branch moves and their PR updates with no review step. If they've rebased
@@ -153,7 +153,7 @@ Nothing about the branch is tied to their fork except the tracking ref.
 
 ```sh
 git remote remove alice
-git bdf r/alice/COM-12345.rebuild-window
+git bdf r/alice/AT-12345.rebuild-window
 ```
 
 `git bd` won't remove their branch until its content lands on the default branch,
@@ -178,5 +178,5 @@ missing — pass `--repo` and `--base`.
 from yours. Pass the repo name when their fork is named differently.
 
 **Ticket transitions follow the branch name.** Committing on their
-`COM-12345.*` branch adds `issue: COM-12345` to your commits, and `r` may move
+`AT-12345.*` branch adds `issue: AT-12345` to your commits, and `r` may move
 that ticket if `at.status.r` is set. That's usually right, occasionally not.

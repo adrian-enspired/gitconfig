@@ -24,38 +24,38 @@ it() { r=$1; shift; AT_OUT=$( (cd "$AT_TMP/$r" && PATH="$AT_TMP/bin:$PATH" sh "$
 
 new_repo it >/dev/null
 git -C "$AT_TMP/it" config at.linear.apikey 'test-key'
-git -C "$AT_TMP/it" config at.ticket.prefix COM
+git -C "$AT_TMP/it" config at.ticket.prefix AT
 
 # ------------------------------------------------------------ moving ---
 
 rm -f "$AT_TMP/linear-requests"
-it it COM-12 'In Review'
+it it AT-12 'In Review'
 is "$AT_RC" '0' 'it moves a ticket'
-contains "$AT_OUT" 'COM-12 -> In Review' 'and says so'
+contains "$AT_OUT" 'AT-12 -> In Review' 'and says so'
 contains "$(cat "$AT_TMP/linear-requests")" 'issueUpdate' 'the mutation was sent'
-contains "$(cat "$AT_TMP/linear-requests")" '"id":"COM-12"' 'for that ticket'
+contains "$(cat "$AT_TMP/linear-requests")" '"id":"AT-12"' 'for that ticket'
 
 # a bare number takes the configured prefix
 rm -f "$AT_TMP/linear-requests"
 it it 34 'Done'
 is "$AT_RC" '0' 'a bare number works'
-contains "$AT_OUT" 'COM-34 -> Done' 'with the configured prefix'
+contains "$AT_OUT" 'AT-34 -> Done' 'with the configured prefix'
 
 # and a lowercase key is uppercased
-it it com-56 'Done'
-contains "$AT_OUT" 'COM-56 -> Done' 'a lowercase key is uppercased'
+it it at-56 'Done'
+contains "$AT_OUT" 'AT-56 -> Done' 'a lowercase key is uppercased'
 
 # the status name is matched however it is cased
-it it COM-12 'in review'
+it it AT-12 'in review'
 is "$AT_RC" '0' 'the status is matched case-insensitively'
 
 # ------------------------------------------------- the branch's own ticket ---
 
-git -C "$AT_TMP/it" switch -q -c COM-90.short-form
+git -C "$AT_TMP/it" switch -q -c AT-90.short-form
 rm -f "$AT_TMP/linear-requests"
 it it 'In Review'
 is "$AT_RC" '0' 'one argument moves the branch ticket'
-contains "$AT_OUT" 'COM-90 -> In Review' 'reading the key off the branch name'
+contains "$AT_OUT" 'AT-90 -> In Review' 'reading the key off the branch name'
 
 # on a branch with no ticket there is nothing to infer
 git -C "$AT_TMP/it" switch -q -c just-a-slug
@@ -67,7 +67,7 @@ git -C "$AT_TMP/it" switch -q master
 
 # ------------------------------------------------------- what can go wrong ---
 
-it it COM-12 'Shipped'
+it it AT-12 'Shipped'
 is "$AT_RC" '1' 'a status the team does not have is an error'
 contains "$AT_OUT" "no status 'Shipped'" 'saying so'
 contains "$AT_OUT" 'In Review' 'and listing the ones it does have'
@@ -75,7 +75,7 @@ contains "$AT_OUT" 'In Review' 'and listing the ones it does have'
 it it not-a-ticket 'Done'
 is "$AT_RC" '1' 'an argument that is not a ticket is an error'
 
-it it COM-12
+it it AT-12
 is "$AT_RC" '1' 'a missing status is a usage error'
 contains "$AT_OUT" 'usage' 'with usage'
 
@@ -87,8 +87,8 @@ contains "$AT_OUT" 'another tracker' 'explaining why'
 
 # no api key is a configuration problem, not a network one
 new_repo nokey >/dev/null
-git -C "$AT_TMP/nokey" config at.ticket.prefix COM
-it nokey COM-1 'Done'
+git -C "$AT_TMP/nokey" config at.ticket.prefix AT
+it nokey AT-1 'Done'
 is "$AT_RC" '1' 'no api key is an error'
 contains "$AT_OUT" 'at.linear.apikey' 'naming the setting'
 

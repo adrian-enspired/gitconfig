@@ -7,6 +7,7 @@
 #   ./install -n         dry run: print what would be copied
 #   ./install --skill    install the agent skill too, without asking
 #   ./install --no-skill skip it without asking
+#   (a skill that is already installed is kept current without asking)
 #   ./install --help     usage, and every setting with its current value
 #
 # Copies the script, the model prompt files and the alias file. Your own
@@ -178,15 +179,30 @@ run cp "$src/at-aliases.gitconfig" "$dest/at-aliases.gitconfig" || exit 1
 skilldir=$(git config --get at.agent.skilldir 2>/dev/null) || skilldir=''
 [ -n "$skilldir" ] || skilldir="$HOME/.claude/skills/git-at"
 if [ -f "$src/skills/git-at/SKILL.md" ]; then
-    if [ -z "$skill" ] && [ -z "$dry" ]; then
-        printf 'install the agent skill into %s? [y/N] ' "$skilldir"
-        read -r reply || reply=''
-        case $reply in y|Y|yes|Yes) skill=yes ;; *) skill=no ;; esac
+    had=''
+    [ -f "$skilldir/SKILL.md" ] && had=1
+    # already installed is an answer: keep it current like everything else here,
+    # and only ask the first time
+    if [ -z "$skill" ]; then
+        if [ -n "$had" ]; then
+            skill=yes
+        elif [ -z "$dry" ]; then
+            printf 'install the agent skill into %s? [y/N] ' "$skilldir"
+            read -r reply || reply=''
+            case $reply in y|Y|yes|Yes) skill=yes ;; *) skill=no ;; esac
+        fi
     fi
     if [ "$skill" = yes ]; then
-        run mkdir -p "$skilldir" || exit 1
-        run cp "$src/skills/git-at/SKILL.md" "$skilldir/SKILL.md" || exit 1
-        [ -n "$dry" ] || say "agent skill installed to $skilldir"
+        if [ -n "$had" ] && cmp -s "$src/skills/git-at/SKILL.md" "$skilldir/SKILL.md"; then
+            [ -n "$dry" ] || say "agent skill: already up to date in $skilldir"
+        else
+            run mkdir -p "$skilldir" || exit 1
+            run cp "$src/skills/git-at/SKILL.md" "$skilldir/SKILL.md" || exit 1
+            if [ -z "$dry" ]; then
+                if [ -n "$had" ]; then say "agent skill updated in $skilldir"
+                else say "agent skill installed to $skilldir"; fi
+            fi
+        fi
     fi
 fi
 
@@ -213,7 +229,7 @@ unset_key() { ! git config --global --get "$1" >/dev/null 2>&1; }
 
 missing=''
 for pair in \
-    'at.ticket.prefix:COM:your linear team prefix, used when you pass a bare number' \
+    'at.ticket.prefix:AT:your linear team prefix, used when you pass a bare number' \
     'at.linear.apikey:lin_api_xxx:a linear personal api key' \
     'at.linear.workspace:nexcess:your linear workspace slug, for ticket links'
 do

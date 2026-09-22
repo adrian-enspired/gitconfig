@@ -1,6 +1,6 @@
 # Working on a ticket
 
-From "I picked up COM-12345" to "the work is committed". Opening the PR is
+From "I picked up AT-12345" to "the work is committed". Opening the PR is
 [the next doc](opening-a-pull-request.md).
 
 ```mermaid
@@ -41,16 +41,16 @@ git dk 12345
 ```
 
 Syncs the default branch, reads the ticket's title from Linear, shortens it to a
-slug, and puts you on `COM-12345.schedule-rebuild-window`. `at.ticket.prefix`
-supplies the `COM-`.
+slug, and puts you on `AT-12345.schedule-rebuild-window`. `at.ticket.prefix`
+supplies the `AT-`.
 
 Other ways in, when you don't want that:
 
 ```sh
 git dk 12345 rebuild-window        # your slug, no model call
-git dk UAT-12345                   # a key from another team
+git dk EX-12345                    # a key from another team
 git dk my-slug                     # no ticket at all
-git dk COM-12345.rebuild-window    # the whole name, as-is
+git dk AT-12345.rebuild-window     # the whole name, as-is
 ```
 
 If `at.status.dk` is set, the ticket moves as you start.
@@ -129,7 +129,7 @@ test(stripe): cover the listing endpoint
 Scope comes from the scopes already in your `git log`, falling back to the changed
 paths. Type is one of `feat fix chore docs refactor test perf build ci`.
 
-`issue: COM-12345` is added from the branch name. `Co-Authored-By` is added only
+`issue: AT-12345` is added from the branch name. `Co-Authored-By` is added only
 with `--cc`, because the trailer attributes the *code*, not who wrote the message.
 Trailers the model invents are stripped.
 

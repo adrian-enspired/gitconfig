@@ -43,7 +43,7 @@ and pass it in:
 
 ```sh
 git c --all -y -m 'feat(stripe): list saved payment methods'
-git r -y '[COM-12345] Rebuild Window' "$(cat /tmp/pr-body.md)"
+git r -y '[AT-12345] Rebuild Window' "$(cat /tmp/pr-body.md)"
 ```
 
 Match the house style by reading the prompt files first - the same ones the model would

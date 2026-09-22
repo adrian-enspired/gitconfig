@@ -89,16 +89,16 @@ is "$(git -C "$AT_TMP/k" branch --show-current)" 'one' 'an exact name beats a su
 new_repo kr >/dev/null
 git init -q --bare "$AT_TMP/kr-remote.git"
 git -C "$AT_TMP/kr" remote add origin "$AT_TMP/kr-remote.git"
-git -C "$AT_TMP/kr" switch -q -c COM-9.remote-work
+git -C "$AT_TMP/kr" switch -q -c AT-9.remote-work
 write_commit kr remote-file 'work' 'feat: remote work'
-git -C "$AT_TMP/kr" push -q origin master COM-9.remote-work
+git -C "$AT_TMP/kr" push -q origin master AT-9.remote-work
 git -C "$AT_TMP/kr" switch -q master
-git -C "$AT_TMP/kr" branch -q -D COM-9.remote-work
+git -C "$AT_TMP/kr" branch -q -D AT-9.remote-work
 
 at_out kr bk remote-work -r origin >/dev/null
 is "$AT_RC" '0' 'bk -r checks out a remote branch'
-is "$(git -C "$AT_TMP/kr" branch --show-current)" 'r/origin/COM-9.remote-work' 'tracking it locally'
-is "$(config kr branch.r/origin/COM-9.remote-work.atbase)" "$(sha kr master)" 'and recording where it started'
+is "$(git -C "$AT_TMP/kr" branch --show-current)" 'r/origin/AT-9.remote-work' 'tracking it locally'
+is "$(config kr branch.r/origin/AT-9.remote-work.atbase)" "$(sha kr master)" 'and recording where it started'
 
 at_out kr bk -r origin >/dev/null
 is "$AT_RC" '1' 'bk -r needs a pattern'

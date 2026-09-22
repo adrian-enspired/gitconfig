@@ -64,7 +64,7 @@ missing API key and a typo'd status produce the same warning.
 | 4 | tracker unreachable | warn, carry on, everywhere |
 | 5 | verb not supported by this provider | warn once, carry on |
 
-Exit 5 is what makes GitHub possible: issues are open or closed, so `move COM-1 "In
+Exit 5 is what makes GitHub possible: issues are open or closed, so `move AT-1 "In
 Review"` has no meaning there. Silently ignoring it would hide a broken workflow;
 refusing outright would make `at.status.*` unusable. Warning once is the honest middle.
 
@@ -94,7 +94,7 @@ masked by the same rule as everywhere else: a key matching `*apikey|*token|*secr
 	provider = linear            # which plugin, by name
 	route = MAD:jira             # repeatable: this prefix uses that provider
 	route = NXERR:none           # recognised, never acted on
-	prefix = COM                 # unchanged: what a bare number means
+	prefix = AT                  # unchanged: what a bare number means
 
 [at "plugin.linear"]
 	apikey =
@@ -126,7 +126,7 @@ same thing in the same vocabulary as every other route.
 
 `provider` is the default; `route` overrides it per prefix. With one tracker the routing
 table is empty and the cost is nothing. With two - the real case, `MAD-*` in Jira and
-`COM-*` in Linear - each key goes where it belongs without a special case in the code.
+`AT-*` in Linear - each key goes where it belongs without a special case in the code.
 
 ## Boundaries
 
