@@ -7,20 +7,20 @@ push a fix into. Their fork becomes a remote in your checkout, named after them.
 flowchart TD
     subgraph one ["find and read their work"]
         direction LR
-        A["git madd alice · add their fork"] --> B["git b -r alice · find the branch"]
-        B --> C["git bk rebuild -r alice · check it out"]
-        C --> D[["git fb · git fk · git ll<br/>read what they did"]]
+        A["add their fork:<br/>git madd alice"] --> B["find the branch:<br/>git b -r alice"]
+        B --> C["check it out:<br/>git bk #quot;rebuild#quot; -r alice"]
+        C --> D[["read what they did:<br/>git fb · git fk · git ll"]]
         D --> E{changes to suggest?}
         E -- no --> F[say so and move on]
         E -- yes --> G(["hand it back"])
     end
     subgraph two ["hand it back"]
         direction LR
-        H(["you have changes to suggest"]) --> I["git c · commit on their branch"]
+        H(["you have changes to suggest"]) --> I["commit on their branch:<br/>git c"]
         I --> J{how should they get it?}
-        J -- default, no access needed --> K["git o · git r<br/>PR into their branch"]
-        J -- you have write access --> L[["git push alice HEAD:you/branch<br/>then git r"]]
-        J -- they asked you to --> M[["git push alice HEAD:their-branch<br/>no review step"]]
+        J -- default, no access needed --> K["PR into their branch:<br/>git o · git r"]
+        J -- you have write access --> L[["a branch on their fork:<br/>git push alice HEAD:you/branch<br/>then git r"]]
+        J -- they asked you to --> M[["straight into their branch:<br/>git push alice HEAD:their-branch"]]
         K --> N[they merge it]
         L --> N
         M --> O[their branch moves]
@@ -39,22 +39,22 @@ own remote's URL, and fetches it. Their fork of a different repo, or a different
 name for the remote:
 
 ```sh
-git madd alice their-fork-name     # different repo
-git madd alice gitconfig ali       # remote named `ali`
+git madd alice "their-fork"         # different repo
+git madd alice "gitconfig" "ali"    # remote named `ali`
 ```
 
 ## Find the branch
 
 ```sh
 git b -r alice              # their branches (fetches first)
-git b rebuild -r alice      # the ones matching `rebuild`
+git b "rebuild" -r alice    # the ones matching `rebuild`
 git b -i -r alice           # with author dates, so you can see what's recent
 ```
 
 ## Check it out
 
 ```sh
-git bk rebuild -r alice
+git bk "rebuild" -r alice
 ```
 
 Creates a local branch `r/alice/AT-12345.rebuild-window` tracking theirs, and

@@ -7,9 +7,9 @@ lands.
 flowchart TD
     subgraph one ["catch up and push"]
         direction LR
-        A["git dr · sync, then rebase"] --> B{parent stale?}
-        B -- yes --> C[["git dr --restack · fix the ancestors<br/>git dr --no-restack · go ahead anyway"]]
-        C --> D["git oof · force-push with a lease"]
+        A["sync, then rebase:<br/>git dr"] --> B{parent stale?}
+        B -- yes --> C[["fix the ancestors:<br/>git dr --restack<br/>or go ahead anyway:<br/>git dr --no-restack"]]
+        C --> D["force-push with a lease:<br/>git oof"]
         B -- no --> D
         D --> N(["review and land"])
     end
@@ -17,14 +17,14 @@ flowchart TD
         direction LR
         E(["branch is pushed"]) --> F{ready for review?}
         F -- yes --> G["git r"]
-        F -- not yet --> H["git rd · draft"]
-        H --> I["git rr · mark it ready"]
+        F -- not yet --> H["open it as a draft:<br/>git rd"]
+        H --> I["mark it ready:<br/>git rr"]
         G --> J[review]
         I --> J
         J --> K{approved?}
-        K -- changes asked for --> L[["git c · git dr · git oof"]]
+        K -- changes asked for --> L[["address the feedback:<br/>git c · git dr · git oof"]]
         L --> J
-        K -- merged --> M[["git ds · git bd · tidy up"]]
+        K -- merged --> M[["tidy up:<br/>git ds · git bd"]]
     end
     one --> two
 ```

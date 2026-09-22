@@ -18,11 +18,11 @@ flowchart TD
     end
     subgraph two ["configure and clone"]
         direction LR
-        G(["aliases installed"]) --> H[["ticket prefix · api key<br/>model command"]]
+        G(["aliases installed"]) --> H[["ticket prefix, api key,<br/>model command"]]
         H --> I{have a checkout?}
-        I -- no --> J["git cf owner/repo"]
-        I -- yes, one remote --> K[["rename origin to upstream<br/>add your fork as origin"]]
-        J --> L["git s · git h"]
+        I -- no --> J["fork and clone:<br/>git cf owner/repo"]
+        I -- yes, one remote --> K[["rename origin to upstream,<br/>add your fork as origin"]]
+        J --> L["check it worked:<br/>git s · git h"]
         K --> L
     end
     one --> two

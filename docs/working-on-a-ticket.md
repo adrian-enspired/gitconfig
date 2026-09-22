@@ -8,23 +8,23 @@ flowchart TD
     subgraph one ["branch"]
         direction LR
         A{branch from} -- the default branch --> B["git dk 12345"]
-        A -- the branch you are on --> C["git uk 12346<br/>(stacked: records a parent)"]
+        A -- the branch you are on --> C["stacked, with a parent recorded:<br/>git uk 12346"]
         B --> D(["code and save"])
         C --> D
     end
     subgraph two ["code and save"]
         direction LR
         E(["you are on the branch"]) --> F[write code]
-        F --> G["git f5 · save as you go"]
+        F --> G["save as you go:<br/>git f5"]
         G --> H{chunk finished?}
         H -- not yet --> F
         H -- yes --> I(["commit"])
     end
     subgraph three ["commit and open a PR"]
         direction LR
-        J(["the work is saved"]) --> K["git c · real message"]
+        J(["the work is saved"]) --> K["commit with a real message:<br/>git c"]
         K --> L{message right?}
-        L -- no --> M[["git um -m 'write it yourself'<br/>git um --regen · let the model try again"]]
+        L -- no --> M[["write it yourself:<br/>git um -m 'a good message'<br/>or let the model try again:<br/>git um --regen"]]
         M --> L
         L -- yes --> N{more to do?}
         N -- yes --> O(["back to code and save"])
@@ -47,9 +47,9 @@ supplies the `AT-`.
 Other ways in, when you don't want that:
 
 ```sh
-git dk 12345 rebuild-window        # your slug, no model call
+git dk 12345 "rebuild-window"      # your slug, no model call
 git dk EX-12345                    # a key from another team
-git dk my-slug                     # no ticket at all
+git dk "my-slug"                   # no ticket at all
 git dk AT-12345.rebuild-window     # the whole name, as-is
 ```
 
