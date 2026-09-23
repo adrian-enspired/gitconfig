@@ -79,10 +79,9 @@ The branch name came from the ticket's title, the commit message from the diff, 
 
 `git h` lists the commands; `git h <command>` explains one.
 
-docs
-----
+workflows
+---------
 
-### Workflows
 - [Getting set up](docs/setup.md)
 - [Working on a ticket](docs/working-on-a-ticket.md)
 - [Opening a pull request](docs/opening-a-pull-request.md)
