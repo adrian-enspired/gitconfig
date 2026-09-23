@@ -1087,14 +1087,13 @@ cmd_fk() { cmd_fb "$(cmd_d)"; }
 
 # --------------------------------------------------------------- patches ----
 #
-# Layout: one directory per repo + branch, artifacts named after the command
-# that produced them, no extension. Names are stable — re-running a command
-# replaces its own previous output and nothing else.
+# One directory per repo + branch, files named after the command that produced them, no extension. 
+# Names are stable — re-running a command replaces its own previous output and nothing else.
 #
-#   <base>/<repo>/<branch>/pf/     format-patch series (0001-*.patch, ...)
+#   <base>/<repo>/<branch>/pf/    format-patch series           (0001-*.patch, ...)
 #   <base>/<repo>/<branch>/pb     flat, branch point..HEAD      (committed work)
 #   <base>/<repo>/<branch>/pall   flat, branch point..worktree  (everything)
-#   <base>/<repo>/<branch>/pw     flat, HEAD..worktree        (uncommitted work)
+#   <base>/<repo>/<branch>/pw     flat, HEAD..worktree          (uncommitted work)
 #
 # <base> is $AT_PATCH_DIR, else `git config at.patch.dir`, else ~/patches.
 #
@@ -1227,8 +1226,7 @@ cmd_pw() {
 _is_mailbox() { head -n1 "$1" 2>/dev/null | grep -q '^From [0-9a-f]\{7,\} '; }
 
 # is every hunk of this patch already present in the working tree?
-# `git apply --reverse --check` exits 0 iff the patch is fully applied; it
-# copes with format-patch mail headers as well as bare diffs.
+# `git apply --reverse --check` exits 0 iff the patch is fully applied
 _is_applied() {
     if [ -d "$1" ]; then
         n=0
@@ -1328,11 +1326,6 @@ cmd_pl() {
 }
 
 # delete patches. by default: this repo + branch only.
-#
-# patches whose content is already present in the working tree are removed
-# without asking (they can be regenerated from the branch). if nothing is
-# applied there is nothing safe to infer, so it asks before deleting.
-#
 #   -a: the whole repo   -y: skip the confirmation   -n: dry run
 cmd_pd() {
     dry=''; yes=''; scope=branch
@@ -1494,8 +1487,6 @@ _apply() {
 }
 
 # apply a patch, choosing from this repo's patches when given none
-#   With no argument: this repo + branch first, then the rest of the repo. Exactly
-#   one candidate is applied; several are offered as a list.
 #   -r   use --reject instead of --3way
 #   $1   file, directory, or "-" for stdin
 cmd_p() {
@@ -1533,9 +1524,9 @@ cmd_p() {
 
 # ----------------------------------------------------------- pull requests --
 #
-# The title comes from the branch name, so it costs no model call. The body is
-# assembled from git - ticket links, trailers, test plan - with the model writing
-# only the prose sections, exactly as far as it can be trusted.
+# The title comes from the branch name, so it costs no model call. 
+# The body is assembled from git - ticket links, trailers, test plan - 
+# with the model writing only the prose sections.
 
 # owner/repo for a remote
 _remote_repo() {
@@ -1543,9 +1534,7 @@ _remote_repo() {
         sed -E 's#/+$##; s#\.git$##; s#^.*[/:]([^/]+/[^/]+)$#\1#'
 }
 
-# does github see $1 as a fork of $2? A cross-repo PR needs that relationship,
-# and without it `gh pr create` fails late with a wall of GraphQL errors. When
-# `gh` cannot answer we do not stand in the way.
+# does github see $1 as a fork of $2?
 #   $1: head repo (owner/name)   $2: base repo (owner/name)
 _is_fork_of() {
     command -v gh >/dev/null 2>&1 || return 0
@@ -1557,8 +1546,8 @@ _is_fork_of() {
     [ "$p" = "$2" ]
 }
 
-# the repo a PR is opened against: upstream, origin, gh's answer, the default
-# branch's remote, then whatever is listed first.
+# the repo a PR is opened against: 
+# upstream, origin, gh's answer, the default branch's remote, then whatever is listed first.
 _base_repo() {
     mine=$(_main_remote) || mine=''
     head=$(_remote_repo "$mine" 2>/dev/null) || head=''
@@ -1569,8 +1558,6 @@ _base_repo() {
             printf '%s\n' "$up"
             return 0
         fi
-        # opening it somewhere else instead would put a PR in a repo nobody asked
-        # for, so say what is wrong and let the caller decide
         _die "github does not see $head as a fork of $up, so a PR between them cannot be opened - check the fork, or name the repo yourself: \`git r --repo $head\`"
     fi
     [ -n "$head" ] && { printf '%s\n' "$head"; return 0; }
@@ -1586,8 +1573,8 @@ _base_repo() {
     _remote_repo "$r"
 }
 
-# the branch a PR targets: a recorded parent that exists on a remote, else the
-# default branch. remotes are consulted in the same order as the base repo.
+# the branch a PR targets: a recorded parent that exists on a remote, else the default branch.
+# remotes are consulted in the same order as the base repo.
 #   $1: branch
 _base_branch() {
     d=$(cmd_d)
@@ -1615,9 +1602,7 @@ cmd__pr_title() {
     fi
 }
 
-# where a ticket lives. an ignored key belongs to a tracker whose address only
-# `at.ticket.ignored-url` knows (a template taking the key); without one the key
-# is printed bare rather than linked somewhere wrong.
+# where a ticket lives.
 _ticket_url() {
     if _is_ignored_key "$1"; then
         u=$(_cfg at.ticket.ignored-url AT_IGNORED_URL)
@@ -1632,10 +1617,6 @@ _ticket_url() {
 }
 
 # the PR body: git writes everything but the prose
-#
-# Its output is redirected rather than captured, so it runs in the caller's shell
-# and every name it sets is the caller's too - hence the prefixes. `base` here
-# once clobbered `_pr`'s, which sent a commit sha to `gh pr create --base`.
 #   $1: branch   $2: branch point   $3: non-empty to skip the model
 _pr_body() {
     _prb_b=$1; _prb_base=$2; _prb_nosum=${3:-}
@@ -1645,8 +1626,7 @@ _pr_body() {
     [ -n "$_prb_keys" ] || _prb_keys=$(cmd_i "$_prb_b")
     _prb_files=$(git diff --name-only "$_prb_base" HEAD | grep -c . || true)
 
-    # one attribution for the branch, taken from the commits that carry one, so
-    # the model that did the work is named rather than a stand-in
+    # find attribution for the branch, taken from the first commit that carries one
     _prb_coauthor=''
     for _prb_sha in $(git rev-list --reverse "$_prb_base..HEAD"); do
         _prb_t=$(git show -s --format='%(trailers:key=Co-Authored-By,valueonly)' "$_prb_sha" | head -n1)
@@ -1728,9 +1708,8 @@ _pr() {
     point=${bp##* }
     [ -n "$title" ] || title=$(cmd__pr_title "$b")
 
-    # A branch checked out from someone else's fork (`bk -r alice`) tracks their
-    # remote, and the PR belongs in their repo against the branch it came from.
-    # The ordinary defaults would propose their commits into upstream as ours.
+    # A branch checked out from someone else's fork tracks their remote,
+    # and the PR belongs in their repo against the branch it came from.
     why=''
     them=$(git config --get "branch.$b.remote" 2>/dev/null) || them=''
     theirs=$(git config --get "branch.$b.merge" 2>/dev/null) || theirs=''
@@ -1760,9 +1739,7 @@ _pr() {
 
     mine=$(_main_remote) || _die 'no remotes - nowhere to push the branch'
     printf 'opening a PR against %s on %s%s\n' "$base" "${repo:-$mine}" "$why" >&2
-    # -u only when there is nothing to overwrite: on a branch checked out from a
-    # collaborator's fork, the tracking ref is what says whose branch this is,
-    # and repointing it at our own fork would lose that on the first push
+    # -u only when there is nothing to overwrite
     track=''
     git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1 || track='-u'
     # shellcheck disable=SC2086  # $track is a flag or nothing
@@ -1802,10 +1779,6 @@ cmd_urr() { _require_github; gh pr ready --undo "$@" && _ticket_move urr; }
 # ---------------------------------------------------------------- remotes ---
 
 # fork a repo and clone your fork: `upstream` is theirs, `origin` is yours
-#
-# The two-remote shape is what `ds`, `dr` and `r` are built around - one place to
-# take work from, another to push it to - and starting a checkout this way is
-# easier than rearranging remotes afterwards.
 #   $1: owner/repo   rest: passed straight to `gh repo fork`
 cmd_cf() {
     [ -n "${1:-}" ] || _die 'usage: git cf <owner/repo> [gh options]'
@@ -1813,8 +1786,7 @@ cmd_cf() {
     what=$1; shift
     gh repo fork "$what" --clone "$@" || return 1
 
-    # gh names the remotes itself; check rather than assume, since a checkout
-    # missing `upstream` behaves like a plain clone everywhere else in this tool
+    # gh names the remotes itself; check rather than assume
     dir=${what##*/}; dir=${dir%.git}
     [ -d "$dir" ] || { _warn "cloned, but '$dir' is not where it landed - check the remotes yourself"; return 0; }
 
@@ -1857,20 +1829,15 @@ cmd_madd() {
 # the alias file that ships beside the script
 _aliases_file() { printf '%s\n' "$(dirname "$0")/at-aliases.gitconfig"; }
 
-# families left out of the index: `diffs` and `patches` are rarely reached for,
-# and `discovery` is machinery the other commands call rather than something to
-# run by hand. `git h <family>` prints any of them. Checked by `_sync-help`.
+# families left out of the index
 _UNLISTED='diffs discovery patches'
 
-# individual commands left out of the index: `o` is a second spelling of `op`,
-# and anyone reading this list found `h` without its help.
+# just an alias
 _UNLISTED_CMDS='h o'
 
 _help_all() { _help_index; _help_aliases; }
 
 # "<family>\t<name>\t<summary>" for every command that has a comment block.
-# The family is the section the function lives in, so commands that do similar
-# things are grouped by where they already sit in this file.
 _help_index() {
     awk '
         /^# -+ .* -+$/ {
@@ -1894,9 +1861,7 @@ _help_index() {
     ' "$0"
 }
 
-# "<family>\t<name>\t<expansion>" for the aliases that are plain git rather than
-# git-at commands. What they expand to is their documentation, and the `# --- x ---`
-# markers in that file are their families.
+# "<family>\t<name>\t<expansion>" for the aliases that are plain git rather than git-at commands.
 _help_aliases() {
     f=$(_aliases_file)
     [ -f "$f" ] || return 0
