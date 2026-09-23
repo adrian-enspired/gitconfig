@@ -3,7 +3,7 @@
 git at it!
 ==========
 
-A handful of short git commands for the workflow most of us actually use: fork, branch from a ticket, commit as you go, keep up with the default branch, open a pull request.
+A handful of short git commands for workflows that are actually useful: fork, branch from a ticket, commit as you go, keep up with the default branch, open a pull request.
 
 _git-at_:
 - ✓ remembers where a branch's own work begins — so rebases and diffs stay right after a squash merge
