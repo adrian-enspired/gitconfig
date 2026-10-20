@@ -119,6 +119,11 @@ printf 'yet more\n' >>"$AT_TMP/amend/file"
 at_out amend um -u --regen -y >/dev/null
 is "$(subject amend)" 'feat(billing): add stripe payment method listing' 'um --regen rewrites it'
 
+printf 'untracked\n' >"$AT_TMP/amend/another-file"
+at_out amend um --all -y </dev/null >/dev/null
+is "$AT_RC" '0' 'um --all -y stages everything without asking'
+is "$(git -C "$AT_TMP/amend" status --porcelain)" '' 'nothing is left unstaged'
+
 # --------------------------------------------------- staging flags ---
 
 setup stage AT-80.thing
@@ -126,6 +131,12 @@ printf 'tracked\n' >"$AT_TMP/stage/README"
 at_out stage c -u -y >/dev/null
 is "$AT_RC" '0' 'c -u stages tracked changes'
 is "$(git -C "$AT_TMP/stage" status --porcelain)" '' 'nothing is left unstaged'
+
+setup stageall AT-80.thing
+printf 'untracked\n' >"$AT_TMP/stageall/new-file"
+at_out stageall c --all -y </dev/null >/dev/null
+is "$AT_RC" '0' 'c --all -y stages everything without asking'
+is "$(git -C "$AT_TMP/stageall" status --porcelain)" '' 'nothing is left unstaged'
 
 # --------------------------------------------------- co-author ---
 

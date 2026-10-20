@@ -110,6 +110,23 @@ rm -f "$AT_TMP/gh-args"
 create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
 contains "$create" '--repo someone-else/gitconfig' 'a real fork targets upstream'
 
+# a stacked branch in a fork: the parent is pushed to origin only, and github
+# rejects a base the target repo does not have, so the default branch it is
+git -C "$AT_TMP/pr" switch -q AT-6.on-top
+rm -f "$AT_TMP/gh-args"
+(cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" rd -y --no-summary) >/dev/null 2>&1
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--repo someone-else/gitconfig' 'a stacked fork branch still targets upstream'
+contains "$create" '--base master' 'on the default branch, since upstream lacks the parent'
+
+# once upstream has the parent, the PR stacks on it
+git -C "$AT_TMP/pr" update-ref refs/remotes/upstream/AT-5.add-listing "$(sha pr AT-5.add-listing)"
+rm -f "$AT_TMP/gh-args"
+(cd "$AT_TMP/pr" && PATH="$AT_TMP/bin:$PATH" GIT_EDITOR=true sh "$AT" rd -y --no-summary) >/dev/null 2>&1
+create=$(grep '^pr create' "$AT_TMP/gh-args" 2>/dev/null || true)
+contains "$create" '--base AT-5.add-listing' 'a parent upstream has is the base'
+git -C "$AT_TMP/pr" update-ref -d refs/remotes/upstream/AT-5.add-listing
+
 # ------------------------------------------- a clone with no origin at all ---
 
 # taken straight from the authoritative repo: `upstream` is the only remote, so

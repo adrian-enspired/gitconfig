@@ -686,7 +686,7 @@ _gen_commit_message() {
 
 # commit; generates the message when none is given, adds the ticket trailer
 #   -u | --all: stage tracked | everything first
-#   -y: commit without opening the editor
+#   -y: commit without opening the editor, and stage --all without asking
 #   --verify: run the hooks (they are skipped by default)
 #   --cc [<name> <email>]: add a co-author trailer, valued from at.commit.coauthor
 #   $@: passed through to `git commit`
@@ -716,7 +716,7 @@ cmd_c() {
 
     case $stage in
         u)   cmd_u >/dev/null || return 1 ;;
-        all) cmd_all || return 1 ;;
+        all) if [ -n "$edit" ]; then cmd_all; else cmd_all -y; fi || return 1 ;;
     esac
 
     # a quicksave is temporary: committing on top of one replaces it
@@ -768,9 +768,10 @@ cmd_c() {
 cmd_u() { git add -u && git status; }
 
 # update all (stage everything, with confirmation)
+#   $1: "-y" = skip confirmation
 cmd_all() {
     git status
-    _confirm 'add all? [y/N] ' || return 1
+    [ "${1:-}" = '-y' ] || _confirm 'add all? [y/N] ' || return 1
     git add --all && git status
 }
 
@@ -780,18 +781,19 @@ cmd_all() {
 #   $@: passed through to `git commit`
 # shellcheck disable=SC2120  # callers may pass commit args through
 cmd_um() {
-    regen=''
+    regen=''; stage=''
     while [ $# -gt 0 ]; do
         case ${1:-} in
-            --all)   cmd_all || return 1; shift ;;
-            -u)      cmd_u >/dev/null || return 1; shift ;;
-            --regen) regen=1; shift ;;
-            *)       break ;;
+            # staging is left to cmd_c, so a -y anywhere also answers --all's prompt
+            --all|-u) stage=$1; shift ;;
+            --regen)  regen=1; shift ;;
+            *)        break ;;
         esac
     done
-    # our own flags go first: cmd_c stops reading flags at the first argument
-    [ -n "$regen" ] && { cmd_c "$@" --amend; return $?; }
-    cmd_c "$@" --amend --no-edit
+    # shellcheck disable=SC2086  # $stage is a flag or nothing
+    [ -n "$regen" ] && { cmd_c $stage "$@" --amend; return $?; }
+    # shellcheck disable=SC2086
+    cmd_c $stage "$@" --amend --no-edit
 }
 
 # quicksave: everything in the tree, into a rolling `working` commit
@@ -1573,14 +1575,15 @@ _base_repo() {
     _remote_repo "$r"
 }
 
-# the branch a PR targets: a recorded parent that exists on a remote, else the default branch.
-# remotes are consulted in the same order as the base repo.
-#   $1: branch
+# the branch a PR targets: a recorded parent that the PR's repo has, else the default branch.
+# github rejects a base that exists only in the fork the head is pushed from.
+#   $1: branch   $2: the repo the PR is opened against
 _base_branch() {
     d=$(cmd_d)
     parent=$(git config --get "branch.$1.atparent" 2>/dev/null) || parent=''
     [ -n "$parent" ] || { printf '%s\n' "$d"; return 0; }
-    for r in upstream $(_main_remote) $(git remote); do
+    for r in $(git remote); do
+        [ "$(_remote_repo "$r")" = "$2" ] || continue
         git rev-parse --verify --quiet "refs/remotes/$r/$parent" >/dev/null 2>&1 &&
             { printf '%s\n' "$parent"; return 0; }
     done
@@ -1721,10 +1724,10 @@ _pr() {
         why=" (this branch tracks $them)"
     fi
 
-    [ -n "$base" ]  || base=$(_base_branch "$b")
     # `_die` inside a command substitution only ends the subshell, so its exit
     # status is the whole signal: swallowing it would carry on past a refusal
     [ -n "$repo" ]  || repo=$(_base_repo) || return 1
+    [ -n "$base" ]  || base=$(_base_branch "$b" "$repo")
 
     f=$(mktemp "${TMPDIR:-/tmp}/git-at-pr.XXXXXX") || return 1
     if [ -n "$body" ]; then

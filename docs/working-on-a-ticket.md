@@ -100,7 +100,7 @@ so `working` never survives into history.
 ```sh
 git c --all        # stage everything first (asks), then commit
 git c -u           # stage tracked changes only
-git c -y           # skip the editor
+git c -y           # skip the editor (and the --all prompt)
 git c -m 'fix(x): by hand'   # no model call
 git c --verify     # run hooks; they're skipped by default
 git c --cc         # Co-Authored-By from at.commit.coauthor
